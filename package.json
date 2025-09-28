@@ -1,42 +1,58 @@
 {
-  "name": "homebridge-plugin-name",
-  "displayName": "Plugin Name",
-  "type": "module",
-  "version": "1.0.0",
-  "private": true,
-  "description": "A short description about what your plugin does.",
-  "author": "Your Name",
-  "license": "Apache-2.0",
-  "homepage": "https://github.com/USERNAME/GITHUB_PROJECT_NAME#readme",
+  "name": "homebridge-litterrobot-pylb",
+  "displayName": "Litter-Robot (pylitterbot sidecar)",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Litter-Robot Homebridge plugin with a Python sidecar: clean cycle control plus completed and fault/interrupt signals.",
+  "author": "@vivellimac",
+  "license": "MIT",
+  "homepage": "https://github.com/vivellimac/homebridge-litterrobot-pylb#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/USERNAME/GITHUB_PROJECT_NAME.git"
+    "url": "https://github.com/vivellimac/homebridge-litterrobot-pylb.git"
   },
   "bugs": {
-    "url": "https://github.com/USERNAME/GITHUB_PROJECT_NAME/issues"
+    "url": "https://github.com/vivellimac/homebridge-litterrobot-pylb/issues"
   },
   "keywords": [
-    "homebridge-plugin"
+    "homebridge-plugin",
+    "litter-robot",
+    "whisker",
+    "homekit",
+    "pylitterbot",
+    "fastapi",
+    "sidecar"
   ],
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "README.md",
+    "LICENSE",
+    "package.json",
+    "config.schema.json",
+    "sidecar",
+    "src",
+    "tsconfig.json"
+  ],
   "engines": {
-    "node": "^20.18.0 || ^22.10.0 || ^24.0.0",
-    "homebridge": "^1.8.0 || ^2.0.0-beta.0"
+    "node": ">=18.17",
+    "homebridge": ">=1.6.0"
+  },
+  "peerDependencies": {
+    "homebridge": ">=1.6.0"
   },
   "scripts": {
-    "build": "rimraf ./dist && tsc",
+    "build": "rimraf dist && tsc",
+    "prepare": "npm run build",
     "lint": "eslint . --max-warnings=0",
-    "prepublishOnly": "npm run lint && npm run build",
-    "watch": "npm run build && npm link && nodemon"
+    "health": "node dist/health.js",
+    "watch": "npm run build && nodemon"
   },
-  "dependencies": {
-    "homebridge-lib": "^7.1.8"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@eslint/js": "^9.36.0",
     "@types/node": "^24.5.2",
     "eslint": "^9.36.0",
-    "homebridge": "^2.0.0-beta.30",
     "nodemon": "^3.1.10",
     "rimraf": "^6.0.1",
     "ts-node": "^10.9.2",
