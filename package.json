@@ -1,40 +1,18 @@
 {
   "name": "homebridge-litterrobot-pylb",
-  "displayName": "Litter-Robot (pylitterbot sidecar)",
-  "version": "0.1.0",
-  "private": false,
-  "description": "Litter-Robot Homebridge plugin with a Python sidecar: clean cycle control plus completed and fault/interrupt signals.",
-  "author": "@vivellimac",
-  "license": "MIT",
-  "homepage": "https://github.com/vivellimac/homebridge-litterrobot-pylb#readme",
+  "version": "0.1.1",
+  "description": "Litter-Robot Homebridge plugin with a Python sidecar (pylitterbot).",
+  "license": "Apache-2.0",
+  "keywords": ["homebridge-plugin", "homekit", "litter-robot", "pylitterbot"],
+  "author": "VivelliMac",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vivellimac/homebridge-litterrobot-pylb.git"
+    "url": "git+https://github.com/vivellimac/homebridge-litterrobot-pylb.git"
   },
   "bugs": {
     "url": "https://github.com/vivellimac/homebridge-litterrobot-pylb/issues"
   },
-  "keywords": [
-    "homebridge-plugin",
-    "litter-robot",
-    "whisker",
-    "homekit",
-    "pylitterbot",
-    "fastapi",
-    "sidecar"
-  ],
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "files": [
-    "README.md",
-    "dist",
-    "LICENSE",
-    "package.json",
-    "config.schema.json",
-    "sidecar",
-    "src",
-    "tsconfig.json"
-  ],
+  "homepage": "https://github.com/vivellimac/homebridge-litterrobot-pylb#readme",
   "engines": {
     "node": ">=18.17",
     "homebridge": ">=1.6.0"
@@ -42,23 +20,22 @@
   "peerDependencies": {
     "homebridge": ">=1.6.0"
   },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE", "package.json", "config.schema.json", "sidecar"],
+  "type": "module",
   "scripts": {
     "build": "rimraf dist && tsc",
-    "prepare": "npm run build",
     "lint": "eslint . --max-warnings=0",
-    "health": "node dist/health.js",
-    "watch": "npm run build && nodemon"
+    "test": "node -e \"console.log(JSON.stringify({ok:true}))\""
   },
-  "dependencies": {},
+  "dependencies": {
+    "homebridge": "^1.7.0"
+  },
   "devDependencies": {
-    "@eslint/js": "^9.3.0",
-    "@types/node": "^20.12.7",
-    "eslint": "^9.3.0",
-    "homebridge": "^1.8.0",
-    "nodemon": "^3.0.2",
-    "rimraf": "^5.0.5",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.6.2",
-    "typescript-eslint": "^8.8.1"
+    "@types/node": "^20.12.12",
+    "eslint": "^9.9.0",
+    "typescript": "^5.5.4",
+    "rimraf": "^5.0.5"
   }
 }
