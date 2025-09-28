@@ -7,7 +7,7 @@
     "properties": {
       "name": { "type": "string", "default": "Litter-Robot" },
       "python": { "type": "string", "title": "Python Executable", "default": "/usr/bin/python3" },
-      "workdir": { "type": "string", "default": "" },
+      "workdir": { "type": "string", "default": "/var/lib/homebridge/lr-sidecar" },
       "username": { "type": "string" },
       "password": { "type": "string" },
       "port": { "type": "number", "default": 8765 },
