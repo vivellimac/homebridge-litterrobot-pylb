@@ -3,39 +3,27 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  // Global ignores
   {
     name: 'ignores',
     ignores: [
       'dist/**',
       'node_modules/**',
-      'sidecar/**',         // Python files, not JS/TS
-      'test/hbConfig/**'
+      'sidecar/**',         // Python sidecar
+      'test/hbConfig/**',
+      'src/@types/**'       // d.ts shims – keep out of lint
     ],
   },
-
-  // Base JS rules for any .js/.mjs files that exist
   {
     name: 'javascript',
     files: ['**/*.js', '**/*.mjs', '**/*.cjs'],
-    languageOptions: {
-      ecmaVersion: 'latest',
-      sourceType: 'module',
-    },
+    languageOptions: { ecmaVersion: 'latest', sourceType: 'module' },
     ...js.configs.recommended,
-    rules: {
-      // keep JS tidy but not overbearing
-      'no-console': 'off'
-    },
+    rules: { 'no-console': 'off' },
   },
-
-  // TypeScript type-checked rules
   {
     name: 'typescript-typechecked',
     files: ['**/*.ts', '**/*.tsx'],
-    extends: [
-      ...tseslint.configs.recommendedTypeChecked,   // includes parser + plugin
-    ],
+    extends: [ ...tseslint.configs.recommendedTypeChecked ],
     languageOptions: {
       parserOptions: {
         project: ['./tsconfig.json'],
@@ -47,10 +35,10 @@ export default tseslint.config(
       import: (await import('eslint-plugin-import')).default,
     },
     rules: {
-      // Keep the repo “lint safe” with no warnings:
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       '@typescript-eslint/no-unnecessary-type-assertion': 'error',
+      '@typescript-eslint/no-redundant-type-constituents': 'error',
       'import/order': ['error', { 'newlines-between': 'always', alphabetize: { order: 'asc' } }],
       'no-duplicate-imports': 'error',
       'no-console': 'off'
