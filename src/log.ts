@@ -12,17 +12,31 @@ type ErrorArgs = Parameters<Logger['error']>;
 type DebugArgs = Logger['debug'] extends (...a: infer P) => any ? P : never;
 
 export const getLogger = (ns?: string): Logger => {
-  if (!root) throw new Error('Logger not initialized');
-  if (!ns) return root;
+  if (!root) {
+    throw new Error('Logger not initialized');
+  }
+
+  if (!ns) {
+    return root;
+  }
 
   const prefix = `[${ns}]`;
 
-  const info: Logger['info'] = (...a: InfoArgs) => root!.info(prefix, ...a);
-  const warn: Logger['warn'] = (...a: WarnArgs) => root!.warn(prefix, ...a);
-  const error: Logger['error'] = (...a: ErrorArgs) => root!.error(prefix, ...a);
-  const debug: Logger['debug'] | undefined = root!.debug
-    ? ((...a: DebugArgs) => (root!.debug as (...a: DebugArgs) => void)(prefix, ...a))
-    : undefined;
+  // Namespaced wrappers
+  const info: Logger['info'] = (...a: InfoArgs) => root.info(prefix, ...a);
+  const warn: Logger['warn'] = (...a: WarnArgs) => root.warn(prefix, ...a);
+  const error: Logger['error'] = (...a: ErrorArgs) => root.error(prefix, ...a);
 
-  return Object.assign(Object.create(root), { info, warn, error, debug });
+  // Build a Logger that preserves all base members and overrides the methods we care about.
+  const base = root; // type narrowed to Logger after the null-check above
+
+  const logger: Logger = {
+    ...base,
+    info,
+    warn,
+    error,
+    ...(base.debug ? { debug: (...a: DebugArgs) => base.debug!(prefix, ...a) } : {}),
+  };
+
+  return logger;
 };
