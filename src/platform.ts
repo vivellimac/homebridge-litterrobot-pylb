@@ -16,8 +16,8 @@ type RobotStatus = {
 };
 
 export class LitterRobotPlatform implements DynamicPlatformPlugin {
-  public readonly Service: typeof Service = this.api.hap.Service;
-  public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
+  public Service!: typeof Service;
+  public Characteristic!: typeof Characteristic;
 
   private accessories = new Map<string, PlatformAccessory>();
   private py: ChildProcess | null = null;
@@ -29,6 +29,11 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     private readonly api: API,
   ) {
     initRootLogger(log);
+
+    // Initialize HAP types AFTER 'api' is available
+    this.Service = this.api.hap.Service;
+    this.Characteristic = this.api.hap.Characteristic;
+
     this.api.on('didFinishLaunching', () => this.start());
     this.api.on('shutdown', () => this.stop());
   }
@@ -52,8 +57,12 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     }
 
     fs.mkdirSync(workdir, { recursive: true });
-    const here = path.dirname(new URL(import.meta.url).pathname);
-    const bootstrap = path.join(here, '..', 'sidecar', 'bootstrap.py');
+
+    // Resolve the plugin’s install dir under Homebridge's storagePath()
+    // Homebridge installs plugins under: <storagePath>/node_modules/<pluginName>
+    const pluginDir = path.join(this.api.user.storagePath(), 'node_modules', PLUGIN_NAME);
+    const bootstrap = path.join(pluginDir, 'sidecar', 'bootstrap.py');
+
     this.py = spawn(pyExec, [bootstrap, '--workdir', workdir, '--port', String(port)], { stdio: 'ignore' });
 
     this.request('POST', port, '/login', { username, password }, (err, body) => {
@@ -142,7 +151,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
           const label = st.status_label ?? null;
           acc.context._last = { cycle: st.cycle, idle: st.idle, code };
 
-          // Heartbeat (single line) — includes code + label + key booleans
+          // Heartbeat
           if (debug) {
             this.log.info(
               `status: code=${code ?? 'n/a'}${label ? `(${label})` : ''} cycle=${st.cycle} idle=${st.idle} pinch=${st.pinch} bonnet=${st.bonnet} home=${st.home} paused=${st.paused} offline=${st.offline}`,
