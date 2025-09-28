@@ -1,4 +1,8 @@
-/* eslint-disable @typescript-eslint/consistent-type-assertions */
+import { spawn, type ChildProcess } from 'node:child_process';
+import http from 'node:http';
+import path from 'node:path';
+import fs from 'node:fs';
+
 import type {
   API,
   DynamicPlatformPlugin,
@@ -8,12 +12,9 @@ import type {
   Service,
   Characteristic,
 } from 'homebridge';
-import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
+
 import { initRootLogger } from './log.js';
-import { spawn, type ChildProcess } from 'node:child_process';
-import http from 'node:http';
-import path from 'node:path';
-import fs from 'node:fs';
+import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
 
 interface RobotStatus {
   id: string;
@@ -121,9 +122,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       this.poll = undefined;
     }
     if (this.py) {
-      try {
-        this.py.kill();
-      } catch { /* ignore */ }
+      try { this.py.kill(); } catch { /* ignore */ }
       this.py = null;
     }
   }
@@ -138,9 +137,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       }
       this.log.warn(`Sidecar not reachable at http://${this.host}:${this.port}; retrying in ${Math.round(delay / 1000)}s`);
       // eslint-disable-next-line no-await-in-loop
-      await new Promise<void>((r) => {
-        this.healthTimer = setTimeout(() => r(), delay);
-      });
+      await new Promise<void>((r) => { this.healthTimer = setTimeout(() => r(), delay); });
       delay = Math.min(delay * 2, 30000);
     }
     return this.healthOnce();
@@ -211,7 +208,8 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       acc.context._last = { cycle: false, idle: false, code: null as string | null };
       acc.context._pulseMs = pulseMs;
 
-      this.api.registerPlatformAccessories(PLATFORM_NAME, PLATFORM_NAME, [acc]);
+      // NOTE: first arg must be the plugin's package name
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [acc]);
       this.accessories.set(uuid, acc);
     }
   }
@@ -336,16 +334,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
   ): void {
     const payload = data != null ? Buffer.from(JSON.stringify(data)) : undefined;
     const req = http.request(
-      {
-        host,
-        port,
-        path: pathName,
-        method,
-        headers: payload
-          ? { 'content-type': 'application/json', 'content-length': String(payload.length) }
-          : undefined,
-        timeout: 8000
-      },
+      { host, port, path: pathName, method, headers: payload ? { 'content-type': 'application/json', 'content-length': String(payload.length) } : undefined, timeout: 8000 },
       (res) => {
         let out = '';
         res.on('data', (c: Buffer) => { out += c.toString('utf8'); });
