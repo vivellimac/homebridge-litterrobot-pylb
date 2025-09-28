@@ -60,7 +60,8 @@ class LitterRobotPlatform {
           clearInterval(this.poll);
         }
         this.poll = setInterval(() => this.pollOnce(port, debug, pulseMs), pollInterval);
-      } catch (e) {
+      }
+      catch (e) {
         this.log.error('Login parse error', String(e));
       }
     });
@@ -84,11 +85,13 @@ class LitterRobotPlatform {
       acc.context.robotId = id;
       const sw = acc.addService(this.Service.Switch, 'Cycle Now');
       sw.getCharacteristic(this.Characteristic.On).onSet((val) => {
-        if (!val)
+        if (!val) {
           return;
+        }
         this.request('POST', Number(this.config.port ?? 8765), `/cycle/${id}`, {}, (err) => {
-          if (err)
+          if (err) {
             this.log.warn('Cycle command failed:', String(err));
+          }
           setTimeout(() => {
             sw.updateCharacteristic(this.Characteristic.On, false);
           }, 500);
@@ -109,42 +112,55 @@ class LitterRobotPlatform {
   pollOnce(port, debug, pulseMs) {
     for (const acc of this.accessories.values()) {
       const id = String(acc.context.robotId ?? '');
-      if (!id)
+      if (!id) {
         continue;
+      }
       this.getStatus(id, port, (st) => {
-        var _a, _b, _c, _d, _e;
-        (_a = acc.getService(this.Service.Switch)) === null || _a === void 0 ? void 0 : _a.updateCharacteristic(this.Characteristic.On, st.cycle);
+        const switchSvc = acc.getService(this.Service.Switch);
+        if (switchSvc) {
+          switchSvc.updateCharacteristic(this.Characteristic.On, st.cycle);
+        }
         const bonnetSvc = acc.getServiceById(this.Service.ContactSensor, 'Bonnet');
         const pinchSvc = acc.getServiceById(this.Service.ContactSensor, 'Pinch');
         const offlineSvc = acc.getServiceById(this.Service.OccupancySensor, 'Offline');
         const completedSvc = acc.getServiceById(this.Service.MotionSensor, 'CycleCompleted');
         const faultSvc = acc.getServiceById(this.Service.ContactSensor, 'CycleFault');
-        bonnetSvc === null || bonnetSvc === void 0 ? void 0 : bonnetSvc.updateCharacteristic(this.Characteristic.ContactSensorState, st.bonnet
-          ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
-          : this.Characteristic.ContactSensorState.CONTACT_DETECTED);
-        pinchSvc === null || pinchSvc === void 0 ? void 0 : pinchSvc.updateCharacteristic(this.Characteristic.ContactSensorState, st.pinch
-          ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
-          : this.Characteristic.ContactSensorState.CONTACT_DETECTED);
-        offlineSvc === null || offlineSvc === void 0 ? void 0 : offlineSvc.updateCharacteristic(this.Characteristic.OccupancyDetected, st.offline
-          ? this.Characteristic.OccupancyDetected.OCCUPANCY_DETECTED
-          : this.Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED);
+        if (bonnetSvc) {
+          bonnetSvc.updateCharacteristic(this.Characteristic.ContactSensorState, st.bonnet
+            ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+            : this.Characteristic.ContactSensorState.CONTACT_DETECTED);
+        }
+        if (pinchSvc) {
+          pinchSvc.updateCharacteristic(this.Characteristic.ContactSensorState, st.pinch
+            ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+            : this.Characteristic.ContactSensorState.CONTACT_DETECTED);
+        }
+        if (offlineSvc) {
+          offlineSvc.updateCharacteristic(this.Characteristic.OccupancyDetected, st.offline
+            ? this.Characteristic.OccupancyDetected.OCCUPANCY_DETECTED
+            : this.Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED);
+        }
         const isFault = Boolean(st.pinch || st.bonnet || st.paused || st.offline);
-        faultSvc === null || faultSvc === void 0 ? void 0 : faultSvc.updateCharacteristic(this.Characteristic.ContactSensorState, isFault
-          ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
-          : this.Characteristic.ContactSensorState.CONTACT_DETECTED);
+        if (faultSvc) {
+          faultSvc.updateCharacteristic(this.Characteristic.ContactSensorState, isFault
+            ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+            : this.Characteristic.ContactSensorState.CONTACT_DETECTED);
+        }
         const last = (acc.context._last ?? { cycle: false, idle: false, code: null });
         if (last.cycle && !st.cycle && st.idle) {
-          const ms = Number((_b = acc.context._pulseMs) !== null && _b !== void 0 ? _b : pulseMs);
-          completedSvc === null || completedSvc === void 0 ? void 0 : completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, true);
-          setTimeout(() => {
-            completedSvc === null || completedSvc === void 0 ? void 0 : completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, false);
-          }, ms);
+          const ms = Number(acc.context._pulseMs ?? pulseMs);
+          if (completedSvc) {
+            completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, true);
+            setTimeout(() => {
+              completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, false);
+            }, ms);
+          }
         }
-        const code = (_c = st.status_code) !== null && _c !== void 0 ? _c : null;
-        const label = (_d = st.status_label) !== null && _d !== void 0 ? _d : null;
+        const code = (st.status_code ?? null);
+        const label = (st.status_label ?? null);
         acc.context._last = { cycle: st.cycle, idle: st.idle, code };
         if (debug) {
-          this.log.info(`status: code=${code !== null && code !== void 0 ? code : 'n/a'}${label ? `(${label})` : ''} ` +
+          this.log.info(`status: code=${code ?? 'n/a'}${label ? `(${label})` : ''} ` +
             `cycle=${st.cycle} idle=${st.idle} pinch=${st.pinch} bonnet=${st.bonnet} ` +
             `home=${st.home} paused=${st.paused} offline=${st.offline}`);
         }
@@ -153,15 +169,16 @@ class LitterRobotPlatform {
   }
   getStatus(id, port, cb) {
     this.request('GET', port, `/status/${id}`, undefined, (err, body) => {
+      var _a;
       if (err) {
-        var _a;
         (_a = this.log.debug) === null || _a === void 0 ? void 0 : _a.call(this.log, 'status error', String(err));
         return;
       }
       try {
         const parsed = JSON.parse(body ?? '{}');
-        if (typeof parsed.id !== 'string')
+        if (typeof parsed.id !== 'string') {
           return;
+        }
         const s = {
           id: parsed.id,
           name: typeof parsed.name === 'string' ? parsed.name : parsed.id,
@@ -202,8 +219,9 @@ class LitterRobotPlatform {
       res.on('end', () => cb(null, out));
     });
     req.on('error', (e) => cb(e));
-    if (payload)
+    if (payload) {
       req.write(payload);
+    }
     req.end();
   }
 }
