@@ -8,12 +8,19 @@ import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
 
-type RobotStatus = {
-  id: string; name: string;
+interface RobotStatus {
+  id: string;
+  name: string;
   status_code?: string | null;   // e.g. "ccc", "ccp", "csf", ...
   status_label?: string | null;  // human-readable label from sidecar
-  cycle: boolean; idle: boolean; pinch: boolean; bonnet: boolean; home: boolean; paused: boolean; offline: boolean;
-};
+  cycle: boolean;
+  idle: boolean;
+  pinch: boolean;
+  bonnet: boolean;
+  home: boolean;
+  paused: boolean;
+  offline: boolean;
+}
 
 export class LitterRobotPlatform implements DynamicPlatformPlugin {
   public Service!: typeof Service;
@@ -44,13 +51,13 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
 
   private start() {
     const port = Number(this.config.port ?? 8765);
-    const workdir = String(this.config.workdir || path.join(this.api.user.storagePath(), 'lr-sidecar'));
-    const pyExec = String(this.config.python || '/usr/bin/python3');
+    const workdir = String(this.config.workdir ?? path.join(this.api.user.storagePath(), 'lr-sidecar'));
+    const pyExec = String(this.config.python ?? '/usr/bin/python3');
     const debug = Boolean(this.config.debug);
     const pulseMs = Math.max(250, Math.min(10000, Number(this.config.pulseMs ?? 1500)));
 
-    const username = String(this.config.username || '');
-    const password = String(this.config.password || '');
+    const username = String(this.config.username ?? '');
+    const password = String(this.config.password ?? '');
     if (!username || !password) {
       this.log.warn('Missing username/password in config — plugin idle.');
       return;
@@ -58,17 +65,20 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
 
     fs.mkdirSync(workdir, { recursive: true });
 
-    // Resolve the plugin’s install dir under Homebridge's storagePath()
-    // Homebridge installs plugins under: <storagePath>/node_modules/<pluginName>
+    // Resolve the plugin install dir under Homebridge's storagePath()
     const pluginDir = path.join(this.api.user.storagePath(), 'node_modules', PLUGIN_NAME);
     const bootstrap = path.join(pluginDir, 'sidecar', 'bootstrap.py');
 
     this.py = spawn(pyExec, [bootstrap, '--workdir', workdir, '--port', String(port)], { stdio: 'ignore' });
 
     this.request('POST', port, '/login', { username, password }, (err, body) => {
-      if (err) { this.log.error('Login failed:', err.message); return; }
+      if (err) {
+        this.log.error('Login failed:', err.message);
+        return;
+      }
       try {
-        const ids: string[] = JSON.parse(body ?? '{}').robots ?? [];
+        const parsed = JSON.parse(body ?? '{}') as { robots?: unknown };
+        const ids: string[] = Array.isArray(parsed.robots) ? (parsed.robots as unknown[]).filter((x): x is string => typeof x === 'string') : [];
         ids.forEach((id) => this.upsertRobot(id, pulseMs));
         this.schedulePoll(port, debug, pulseMs);
       } catch (e) {
@@ -78,8 +88,14 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
   }
 
   private stop() {
-    if (this.poll) { clearInterval(this.poll); this.poll = undefined; }
-    if (this.py) { this.py.kill(); this.py = null; }
+    if (this.poll) {
+      clearInterval(this.poll);
+      this.poll = undefined;
+    }
+    if (this.py) {
+      this.py.kill();
+      this.py = null;
+    }
   }
 
   private upsertRobot(id: string, pulseMs: number) {
@@ -91,11 +107,17 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
 
       // Controls
       const sw = acc.addService(this.Service.Switch, 'Cycle Now');
-      sw.getCharacteristic(this.Characteristic.On).onSet(async (val) => {
-        if (!val) return;
+      sw.getCharacteristic(this.Characteristic.On).onSet((val) => {
+        if (!val) {
+          return;
+        }
         this.request('POST', Number(this.config.port ?? 8765), `/cycle/${id}`, {}, (err) => {
-          if (err) this.log.warn('Cycle command failed:', String(err));
-          setTimeout(() => sw.updateCharacteristic(this.Characteristic.On, false), 500);
+          if (err) {
+            this.log.warn('Cycle command failed:', String(err));
+          }
+          setTimeout(() => {
+            sw.updateCharacteristic(this.Characteristic.On, false);
+          }, 500);
         });
       });
 
@@ -139,11 +161,13 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
 
           // Completed pulse by state transition (cycle -> false && idle -> true)
           const last = acc.context._last as { cycle: boolean; idle: boolean; code: string | null };
-          if (last && last.cycle && !st.cycle && st.idle) {
+          if (last.cycle && !st.cycle && st.idle) {
             const ms = Number(acc.context._pulseMs ?? pulseMs);
             const svc = acc.getService('CycleCompleted');
             svc?.updateCharacteristic(this.Characteristic.MotionDetected, true);
-            setTimeout(() => svc?.updateCharacteristic(this.Characteristic.MotionDetected, false), ms);
+            setTimeout(() => {
+              svc?.updateCharacteristic(this.Characteristic.MotionDetected, false);
+            }, ms);
           }
 
           // Capture raw status_code for future transitions
@@ -154,7 +178,8 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
           // Heartbeat
           if (debug) {
             this.log.info(
-              `status: code=${code ?? 'n/a'}${label ? `(${label})` : ''} cycle=${st.cycle} idle=${st.idle} pinch=${st.pinch} bonnet=${st.bonnet} home=${st.home} paused=${st.paused} offline=${st.offline}`,
+              `status: code=${code ?? 'n/a'}${label ? `(${label})` : ''} cycle=${st.cycle} idle=${st.idle} ` +
+              `pinch=${st.pinch} bonnet=${st.bonnet} home=${st.home} paused=${st.paused} offline=${st.offline}`,
             );
           }
         });
@@ -162,27 +187,68 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     }, interval);
   }
 
-  private getStatus(id: string, port: number, cb: (s: RobotStatus)=>void) {
+  private getStatus(id: string, port: number, cb: (s: RobotStatus) => void) {
     this.request('GET', port, `/status/${id}`, undefined, (err, body) => {
-      if (err) { this.log.debug?.('status error', String(err)); return; }
-      try { cb(JSON.parse(body ?? '{}') as RobotStatus); } catch { /* ignore parse */ }
+      if (err) {
+        this.log.debug?.('status error', String(err));
+        return;
+      }
+      try {
+        const parsed = JSON.parse(body ?? '{}') as Partial<RobotStatus>;
+        // Basic shape validation
+        if (typeof parsed.id !== 'string') {
+          return;
+        }
+        // Fill required booleans with safe defaults if missing
+        const s: RobotStatus = {
+          id: parsed.id,
+          name: typeof parsed.name === 'string' ? parsed.name : parsed.id,
+          status_code: parsed.status_code ?? null,
+          status_label: parsed.status_label ?? null,
+          cycle: Boolean(parsed.cycle),
+          idle: Boolean(parsed.idle),
+          pinch: Boolean(parsed.pinch),
+          bonnet: Boolean(parsed.bonnet),
+          home: Boolean(parsed.home),
+          paused: Boolean(parsed.paused),
+          offline: Boolean(parsed.offline),
+        };
+        cb(s);
+      } catch {
+        // ignore parse errors silently to avoid log spam
+      }
     });
   }
 
-  private request(method: 'GET'|'POST', port: number, path: string, data: any,
-    cb: (err?: Error|null, body?: string)=>void) {
-    const payload = data ? Buffer.from(JSON.stringify(data)) : undefined;
+  private request(
+    method: 'GET' | 'POST',
+    port: number,
+    pathName: string,
+    data: unknown,
+    cb: (err?: Error | null, body?: string) => void,
+  ) {
+    const payload = data != null ? Buffer.from(JSON.stringify(data)) : undefined;
     const req = http.request(
-      { host: '127.0.0.1', port, path, method,
+      {
+        host: '127.0.0.1',
+        port,
+        path: pathName,
+        method,
         headers: payload ? { 'content-type': 'application/json', 'content-length': String(payload.length) } : undefined,
-        timeout: 8000 },
+        timeout: 8000,
+      },
       (res) => {
         let out = '';
-        res.on('data', (c) => { out += c; });
+        res.on('data', (c: Buffer) => {
+          out += c.toString('utf8');
+        });
         res.on('end', () => cb(null, out));
-      });
+      },
+    );
     req.on('error', (e) => cb(e as Error));
-    if (payload) req.write(payload);
+    if (payload) {
+      req.write(payload);
+    }
     req.end();
   }
 }
