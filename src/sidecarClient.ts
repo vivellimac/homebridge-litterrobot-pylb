@@ -1,10 +1,8 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
-type Json = Record<string, unknown>;
-
+// Lightweight HTTP client for a sidecar; used only if needed in future flows.
 export interface SidecarClientOptions {
-  baseUrl: string;          // e.g. http://127.0.0.1:8765 or http://host:port
-  timeoutMs?: number;       // per request
-  maxBackoffMs?: number;    // cap for exponential backoff
+  baseUrl: string;          // e.g. http://127.0.0.1:8765
+  timeoutMs?: number;
+  maxBackoffMs?: number;
 }
 
 export class SidecarClient {
@@ -21,42 +19,43 @@ export class SidecarClient {
   async health(): Promise<boolean> {
     try {
       const r = await this.getJson('/health');
-      return Boolean((r as Json).ok);
+      return typeof r === 'object' && r !== null && 'ok' in (r as Record<string, unknown>) && Boolean((r as any).ok);
     } catch {
       return false;
     }
   }
 
-  async listRobots(): Promise<Json[]> {
+  async listRobots(): Promise<Record<string, unknown>[]> {
     const r = await this.getJson('/robots');
-    return Array.isArray(r) ? (r as Json[]) : [];
+    return Array.isArray(r) ? (r as Record<string, unknown>[]) : [];
+    }
+
+  async status(serial: string): Promise<Record<string, unknown>> {
+    const r = await this.getJson(`/status/${encodeURIComponent(serial)}`);
+    return (typeof r === 'object' && r !== null) ? (r as Record<string, unknown>) : {};
   }
 
-  async status(serial: string): Promise<Json> {
-    return this.getJson(`/status/${encodeURIComponent(serial)}`);
-  }
-
-  async cycle(serial: string): Promise<Json> {
-    return this.postJson('/cycle', { serial });
+  async cycle(serial: string): Promise<Record<string, unknown>> {
+    const r = await this.postJson('/cycle', { serial });
+    return (typeof r === 'object' && r !== null) ? (r as Record<string, unknown>) : {};
   }
 
   // ---- internal
 
-  private async getJson(path: string): Promise<Json | unknown> {
+  private async getJson(path: string): Promise<unknown> {
     const ctrl = new AbortController();
     const id = setTimeout(() => ctrl.abort(), this.timeoutMs);
     try {
       const res = await fetch(this.baseUrl + path, { signal: ctrl.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.headers.get('content-type')?.includes('application/json')
-        ? res.json()
-        : res.text();
+      const ct = res.headers.get('content-type') || '';
+      return ct.includes('application/json') ? res.json() : res.text();
     } finally {
       clearTimeout(id);
     }
   }
 
-  private async postJson(path: string, body: Json): Promise<Json | unknown> {
+  private async postJson(path: string, body: Record<string, unknown>): Promise<unknown> {
     const ctrl = new AbortController();
     const id = setTimeout(() => ctrl.abort(), this.timeoutMs);
     try {
@@ -67,9 +66,8 @@ export class SidecarClient {
         signal: ctrl.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.headers.get('content-type')?.includes('application/json')
-        ? res.json()
-        : res.text();
+      const ct = res.headers.get('content-type') || '';
+      return ct.includes('application/json') ? res.json() : res.text();
     } finally {
       clearTimeout(id);
     }
