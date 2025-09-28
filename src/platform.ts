@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import fs from 'node:fs';
 
 import type {
   API,
@@ -19,8 +19,8 @@ import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
 interface RobotStatus {
   id: string;
   name: string;
-  status_code?: string | null;
-  status_label?: string | null;
+  status_code?: string | null;   // e.g. "ccc", "ccp", "csf", ...
+  status_label?: string | null;  // human-readable label from sidecar
   cycle: boolean;
   idle: boolean;
   pinch: boolean;
@@ -56,6 +56,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     private readonly api: API,
   ) {
     initRootLogger(log);
+
     this.Service = this.api.hap.Service;
     this.Characteristic = this.api.hap.Characteristic;
 
@@ -72,7 +73,10 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     this.accessories.set(acc.UUID, acc);
   }
 
+  // ---------- lifecycle ----------
+
   private start(): void {
+    // Clamp config
     this.port = Number(this.config.port ?? 8765);
     this.host = String(this.config.host ?? '127.0.0.1').trim() || '127.0.0.1';
     const workdir = String(this.config.workdir ?? path.join(this.api.user.storagePath(), 'lr-sidecar'));
@@ -82,16 +86,20 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     this.pollInterval = Math.max(3000, Math.min(60000, Number(this.config.pollInterval ?? 10000)));
 
     const username = String(this.config.username ?? '');
-    const password = String(this.config.password ?? '');
+    the password = String(this.config.password ?? '');
     if (!username || !password) {
       this.log.warn('Missing username/password in config — plugin idle.');
       return;
     }
 
     fs.mkdirSync(workdir, { recursive: true });
+
+    // Resolve the plugin install dir under Homebridge's storagePath()
     const pluginDir = path.join(this.api.user.storagePath(), 'node_modules', PLUGIN_NAME);
     const bootstrap = path.join(pluginDir, 'sidecar', 'bootstrap.py');
 
+    // Launch sidecar (silent stdio). If it already runs, FastAPI will fail to bind;
+    // we still rely on health check to proceed, without crashing.
     try {
       this.py = spawn(pyExec, [bootstrap, '--workdir', workdir, '--port', String(this.port)], { stdio: 'ignore' });
       this.py.on('exit', (code, signal) => {
@@ -101,6 +109,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       this.log.error('Failed to spawn sidecar:', String(e));
     }
 
+    // Wait for health then login
     this.waitForHealth()
       .then((ok) => {
         if (!ok) {
@@ -122,12 +131,19 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       this.poll = undefined;
     }
     if (this.py) {
-      try { this.py.kill(); } catch { /* ignore */ }
+      try {
+        this.py.kill();
+      } catch {
+        // ignore
+      }
       this.py = null;
     }
   }
 
+  // ---------- bootstrap helpers ----------
+
   private async waitForHealth(): Promise<boolean> {
+    // Exponential backoff up to ~30s
     let delay = 1000;
     for (let i = 0; i < 6; i++) {
       const ok = await this.healthOnce();
@@ -136,8 +152,9 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
         return true;
       }
       this.log.warn(`Sidecar not reachable at http://${this.host}:${this.port}; retrying in ${Math.round(delay / 1000)}s`);
-      // eslint-disable-next-line no-await-in-loop
-      await new Promise<void>((r) => { this.healthTimer = setTimeout(() => r(), delay); });
+      await new Promise<void>((r) => {
+        this.healthTimer = setTimeout(() => r(), delay);
+      });
       delay = Math.min(delay * 2, 30000);
     }
     return this.healthOnce();
@@ -146,7 +163,10 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
   private healthOnce(): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
       this.request('GET', this.host, this.port, '/health', undefined, (err, body) => {
-        if (err) return resolve(false);
+        if (err) {
+          resolve(false);
+          return;
+        }
         try {
           const parsed = JSON.parse(body ?? '{}') as { ok?: unknown };
           resolve(Boolean(parsed.ok));
@@ -174,13 +194,18 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
         }
 
         ids.forEach((id) => this.upsertRobot(id, this.pulseMs));
-        if (this.poll) clearInterval(this.poll);
+
+        if (this.poll) {
+          clearInterval(this.poll);
+        }
         this.poll = setInterval(() => this.pollOnce(this.debug, this.pulseMs), this.pollInterval);
       } catch (e) {
         this.log.error('Login parse error:', String(e));
       }
     });
   }
+
+  // ---------- accessories ----------
 
   private upsertRobot(id: string, pulseMs: number): void {
     const uuid = this.api.hap.uuid.generate(id);
@@ -190,29 +215,41 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       acc = new this.api.platformAccessory(`Litter-Robot ${id.slice(-4)}`, uuid);
       acc.context.robotId = id;
 
+      // Controls
       const sw = acc.addService(this.Service.Switch, 'Cycle Now');
       sw.getCharacteristic(this.Characteristic.On).onSet((val) => {
         if (!val) return;
         this.request('POST', this.host, this.port, `/cycle/${id}`, {}, (err) => {
-          if (err) this.log.warn('Cycle command failed:', String(err));
-          setTimeout(() => sw.updateCharacteristic(this.Characteristic.On, false), 500);
+          if (err) {
+            this.log.warn('Cycle command failed:', String(err));
+          }
+          setTimeout(() => {
+            sw.updateCharacteristic(this.Characteristic.On, false);
+          }, 500);
         });
       });
 
+      // Simple state sensors (add with subtypes for stable lookups)
       acc.addService(this.Service.ContactSensor, 'Bonnet', 'Bonnet');
       acc.addService(this.Service.ContactSensor, 'Pinch', 'Pinch');
       acc.addService(this.Service.OccupancySensor, 'Offline', 'Offline');
+
+      // Automation-friendly sensors
       acc.addService(this.Service.MotionSensor, 'Cycle Completed', 'CycleCompleted');
       acc.addService(this.Service.ContactSensor, 'Cycle Fault', 'CycleFault');
 
+      // Track last state & last code for future transitions
       acc.context._last = { cycle: false, idle: false, code: null as string | null };
+
+      // Pulse duration
       acc.context._pulseMs = pulseMs;
 
-      // NOTE: first arg must be the plugin's package name
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [acc]);
       this.accessories.set(uuid, acc);
     }
   }
+
+  // ---------- polling / mapping ----------
 
   private pollOnce(debug: boolean, pulseMs: number): void {
     for (const acc of this.accessories.values()) {
@@ -220,17 +257,20 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       if (!id) continue;
 
       this.getStatus(id, (st) => {
+        // Reflect switch
         const switchSvc = acc.getService(this.Service.Switch);
         if (switchSvc) {
           switchSvc.updateCharacteristic(this.Characteristic.On, st.cycle);
         }
 
+        // Convenience helpers for service lookups by subtype
         const bonnetSvc = acc.getServiceById(this.Service.ContactSensor, 'Bonnet');
         const pinchSvc = acc.getServiceById(this.Service.ContactSensor, 'Pinch');
         const offlineSvc = acc.getServiceById(this.Service.OccupancySensor, 'Offline');
         const completedSvc = acc.getServiceById(this.Service.MotionSensor, 'CycleCompleted');
         const faultSvc = acc.getServiceById(this.Service.ContactSensor, 'CycleFault');
 
+        // Basic sensors
         if (bonnetSvc) {
           bonnetSvc.updateCharacteristic(
             this.Characteristic.ContactSensorState,
@@ -258,6 +298,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
           );
         }
 
+        // Fault (OPEN on any fault-ish condition)
         const isFault = Boolean(st.pinch || st.bonnet || st.paused || st.offline);
         if (faultSvc) {
           faultSvc.updateCharacteristic(
@@ -268,6 +309,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
           );
         }
 
+        // Completed pulse by state transition (cycle -> false && idle -> true)
         const last = (acc.context._last ?? { cycle: false, idle: false, code: null }) as LastState;
         if (last.cycle && !st.cycle && st.idle) {
           const ms = Number(acc.context._pulseMs ?? pulseMs);
@@ -279,10 +321,12 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
           }
         }
 
+        // Capture raw status_code for future transitions
         const code = st.status_code ?? null;
         const label = st.status_label ?? null;
         acc.context._last = { cycle: st.cycle, idle: st.idle, code };
 
+        // Heartbeat (single concise line)
         if (debug) {
           this.log.info(
             `status: code=${code ?? 'n/a'}${label ? `(${label})` : ''} ` +
@@ -302,8 +346,12 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       }
       try {
         const parsed = JSON.parse(body ?? '{}') as Partial<RobotStatus>;
-        if (typeof parsed.id !== 'string') return;
+        // Basic shape validation
+        if (typeof parsed.id !== 'string') {
+          return;
+        }
 
+        // Fill required booleans with safe defaults if missing
         const s: RobotStatus = {
           id: parsed.id,
           name: typeof parsed.name === 'string' ? parsed.name : parsed.id,
@@ -319,10 +367,12 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
         };
         cb(s);
       } catch {
-        // ignore parse errors to avoid spam
+        // ignore parse errors silently to avoid log spam
       }
     });
   }
+
+  // ---------- http helper ----------
 
   private request(
     method: 'GET' | 'POST',
@@ -334,15 +384,28 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
   ): void {
     const payload = data != null ? Buffer.from(JSON.stringify(data)) : undefined;
     const req = http.request(
-      { host, port, path: pathName, method, headers: payload ? { 'content-type': 'application/json', 'content-length': String(payload.length) } : undefined, timeout: 8000 },
+      {
+        host,
+        port,
+        path: pathName,
+        method,
+        headers: payload
+          ? { 'content-type': 'application/json', 'content-length': String(payload.length) }
+          : undefined,
+        timeout: 8000,
+      },
       (res) => {
         let out = '';
-        res.on('data', (c: Buffer) => { out += c.toString('utf8'); });
+        res.on('data', (c: Buffer) => {
+          out += c.toString('utf8');
+        });
         res.on('end', () => cb(null, out));
       },
     );
     req.on('error', (e: Error) => cb(e));
-    if (payload) req.write(payload);
+    if (payload) {
+      req.write(payload);
+    }
     req.end();
   }
 }
