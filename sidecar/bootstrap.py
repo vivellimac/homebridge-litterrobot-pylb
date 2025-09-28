@@ -1,30 +1,18 @@
-import argparse, os, subprocess, sys
-
-def run(cmd, **kw):
-    return subprocess.check_call(cmd, **kw)
+# sidecar/bootstrap.py
+import argparse
+import os
+import uvicorn
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--workdir", required=True)
-    p.add_argument("--port", required=True)
-    args = p.parse_args()
+  p = argparse.ArgumentParser()
+  p.add_argument("--workdir", default=os.path.expanduser("~/lr_sidecar"))
+  p.add_argument("--port", default="8765")
+  args = p.parse_args()
 
-    wd = args.workdir
-    os.makedirs(wd, exist_ok=True)
-    venv = os.path.join(wd, ".venv")
-    py = sys.executable
-
-    if not (os.path.exists(os.path.join(venv, "bin")) or os.path.exists(os.path.join(venv, "Scripts"))):
-        run([py, "-m", "venv", venv])
-
-    pip = os.path.join(venv, "bin", "pip") if os.name != "nt" else os.path.join(venv, "Scripts", "pip.exe")
-    uvicorn = os.path.join(venv, "bin", "uvicorn") if os.name != "nt" else os.path.join(venv, "Scripts", "uvicorn.exe")
-    req = os.path.join(os.path.dirname(__file__), "requirements.txt")
-
-    run([pip, "install", "-q", "-r", req])
-
-    app_dir = os.path.dirname(__file__)
-    os.execv(uvicorn, [uvicorn, "app:app", "--host", "127.0.0.1", "--port", args.port, "--app-dir", app_dir])
+  os.makedirs(args.workdir, exist_ok=True)
+  os.chdir(args.workdir)
+  # single worker so the in-memory Account is shared
+  uvicorn.run("sidecar.app:app", host="127.0.0.1", port=int(args.port), workers=1)
 
 if __name__ == "__main__":
-    main()
+  main()
