@@ -5,7 +5,7 @@
 This plugin exposes a simple, reliable HomeKit surface while delegating all Litter-Robot API work to a tiny **FastAPI + `pylitterbot`** sidecar running locally.
 
 - **Controls**
-  - **Cycle Now** (Switch)
+  - **Cycle Now** (Control Switch)
 
 - **Sensors**
   - **Cycle Completed** (Motion, pulses briefly for automations/notifications)
