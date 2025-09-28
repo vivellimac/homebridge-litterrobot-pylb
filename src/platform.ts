@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/consistent-type-assertions */
 import type {
   API,
   DynamicPlatformPlugin,
@@ -41,6 +42,12 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
   private readonly accessories = new Map<string, PlatformAccessory>();
   private py: ChildProcess | null = null;
   private poll?: NodeJS.Timeout;
+  private healthTimer?: NodeJS.Timeout;
+  private host = '127.0.0.1';
+  private port = 8765;
+  private pulseMs = 1500;
+  private pollInterval = 5000;
+  private debug = false;
 
   constructor(
     private readonly log: Logger,
@@ -68,14 +75,15 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
 
   // ---------- lifecycle ----------
 
-  private start() {
+  private start(): void {
     // Clamp config
-    const port = Number(this.config.port ?? 8765);
+    this.port = Number(this.config.port ?? 8765);
+    this.host = String(this.config.host ?? '127.0.0.1').trim() || '127.0.0.1';
     const workdir = String(this.config.workdir ?? path.join(this.api.user.storagePath(), 'lr-sidecar'));
     const pyExec = String(this.config.python ?? '/usr/bin/python3');
-    const debug = Boolean(this.config.debug);
-    const pulseMs = Math.max(250, Math.min(10000, Number(this.config.pulseMs ?? 1500)));
-    const pollInterval = Math.max(3000, Math.min(60000, Number(this.config.pollInterval ?? 5000)));
+    this.debug = Boolean(this.config.debug);
+    this.pulseMs = Math.max(250, Math.min(10000, Number(this.config.pulseMs ?? 1500)));
+    this.pollInterval = Math.max(3000, Math.min(60000, Number(this.config.pollInterval ?? 5000)));
 
     const username = String(this.config.username ?? '');
     const password = String(this.config.password ?? '');
@@ -90,11 +98,88 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     const pluginDir = path.join(this.api.user.storagePath(), 'node_modules', PLUGIN_NAME);
     const bootstrap = path.join(pluginDir, 'sidecar', 'bootstrap.py');
 
-    // Launch sidecar (silent stdio)
-    this.py = spawn(pyExec, [bootstrap, '--workdir', workdir, '--port', String(port)], { stdio: 'ignore' });
+    // Launch sidecar (silent stdio). If it already runs, FastAPI will fail to bind;
+    // we still rely on health check to proceed, without crashing.
+    try {
+      this.py = spawn(pyExec, [bootstrap, '--workdir', workdir, '--port', String(this.port)], { stdio: 'ignore' });
+      this.py.on('exit', (code, signal) => {
+        this.log.warn(`Sidecar exited (code=${code ?? 'n/a'} signal=${signal ?? 'n/a'})`);
+      });
+    } catch (e) {
+      this.log.error('Failed to spawn sidecar:', String(e));
+    }
 
-    // Authenticate, discover, then schedule polling
-    this.request('POST', port, '/login', { username, password }, (err, body) => {
+    // Wait for health then login
+    this.waitForHealth()
+      .then((ok) => {
+        if (!ok) {
+          this.log.error(`Sidecar unreachable at http://${this.host}:${this.port} — plugin idle.`);
+          return;
+        }
+        this.loginAndDiscover(username, password);
+      })
+      .catch((e) => this.log.error('Health check error:', String(e)));
+  }
+
+  private stop(): void {
+    if (this.healthTimer) {
+      clearTimeout(this.healthTimer);
+      this.healthTimer = undefined;
+    }
+    if (this.poll) {
+      clearInterval(this.poll);
+      this.poll = undefined;
+    }
+    if (this.py) {
+      try {
+        this.py.kill();
+      } catch {
+        // ignore
+      }
+      this.py = null;
+    }
+  }
+
+  // ---------- bootstrap helpers ----------
+
+  private async waitForHealth(): Promise<boolean> {
+    // Exponential backoff up to ~30s
+    let delay = 1000;
+    for (let i = 0; i < 6; i++) {
+      const ok = await this.healthOnce();
+      if (ok) {
+        if (this.debug) this.log.info(`Sidecar healthy at http://${this.host}:${this.port}`);
+        return true;
+      }
+      this.log.warn(`Sidecar not reachable at http://${this.host}:${this.port}; retrying in ${Math.round(delay / 1000)}s`);
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise<void>((r) => {
+        this.healthTimer = setTimeout(() => r(), delay);
+      });
+      delay = Math.min(delay * 2, 30000);
+    }
+    return this.healthOnce();
+  }
+
+  private healthOnce(): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      this.request('GET', this.host, this.port, '/health', undefined, (err, body) => {
+        if (err) {
+          resolve(false);
+          return;
+        }
+        try {
+          const parsed = JSON.parse(body ?? '{}') as { ok?: unknown };
+          resolve(Boolean(parsed.ok));
+        } catch {
+          resolve(false);
+        }
+      });
+    });
+  }
+
+  private loginAndDiscover(username: string, password: string): void {
+    this.request('POST', this.host, this.port, '/login', { username, password }, (err, body) => {
       if (err) {
         this.log.error('Login failed:', err.message);
         return;
@@ -105,33 +190,23 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
           ? (parsed.robots as unknown[]).filter((x): x is string => typeof x === 'string')
           : [];
 
-        ids.forEach((id) => this.upsertRobot(id, pulseMs));
-
-        // Clear any existing poller, then start fresh
-        if (this.poll) {
-          clearInterval(this.poll);
+        if (ids.length === 0) {
+          this.log.warn('No robots returned from sidecar login; will still start polling.');
         }
-        this.poll = setInterval(() => this.pollOnce(port, debug, pulseMs), pollInterval);
+
+        ids.forEach((id) => this.upsertRobot(id, this.pulseMs));
+
+        if (this.poll) clearInterval(this.poll);
+        this.poll = setInterval(() => this.pollOnce(this.debug, this.pulseMs), this.pollInterval);
       } catch (e) {
-        this.log.error('Login parse error', String(e));
+        this.log.error('Login parse error:', String(e));
       }
     });
   }
 
-  private stop() {
-    if (this.poll) {
-      clearInterval(this.poll);
-      this.poll = undefined;
-    }
-    if (this.py) {
-      this.py.kill();
-      this.py = null;
-    }
-  }
-
   // ---------- accessories ----------
 
-  private upsertRobot(id: string, pulseMs: number) {
+  private upsertRobot(id: string, pulseMs: number): void {
     const uuid = this.api.hap.uuid.generate(id);
     let acc = this.accessories.get(uuid);
 
@@ -142,10 +217,8 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       // Controls
       const sw = acc.addService(this.Service.Switch, 'Cycle Now');
       sw.getCharacteristic(this.Characteristic.On).onSet((val) => {
-        if (!val) {
-          return;
-        }
-        this.request('POST', Number(this.config.port ?? 8765), `/cycle/${id}`, {}, (err) => {
+        if (!val) return;
+        this.request('POST', this.host, this.port, `/cycle/${id}`, {}, (err) => {
           if (err) {
             this.log.warn('Cycle command failed:', String(err));
           }
@@ -177,15 +250,13 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
 
   // ---------- polling / mapping ----------
 
-  private pollOnce(port: number, debug: boolean, pulseMs: number) {
+  private pollOnce(debug: boolean, pulseMs: number): void {
     for (const acc of this.accessories.values()) {
       const id = String(acc.context.robotId ?? '');
-      if (!id) {
-        continue;
-      }
+      if (!id) continue;
 
-      this.getStatus(id, port, (st) => {
-        // Reflect switch
+      this.getStatus(id, (st) => {
+        // Reflect switch (shows active cycle)
         const switchSvc = acc.getService(this.Service.Switch);
         if (switchSvc) {
           switchSvc.updateCharacteristic(this.Characteristic.On, st.cycle);
@@ -266,12 +337,10 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     }
   }
 
-  private getStatus(id: string, port: number, cb: (s: RobotStatus) => void) {
-    this.request('GET', port, `/status/${id}`, undefined, (err, body) => {
+  private getStatus(id: string, cb: (s: RobotStatus) => void): void {
+    this.request('GET', this.host, this.port, `/status/${encodeURIComponent(id)}`, undefined, (err, body) => {
       if (err) {
-        if (this.log.debug) {
-          this.log.debug('status error', String(err));
-        }
+        this.log.debug?.('status error', String(err));
         return;
       }
       try {
@@ -306,15 +375,16 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
 
   private request(
     method: 'GET' | 'POST',
+    host: string,
     port: number,
     pathName: string,
     data: unknown,
     cb: (err?: Error | null, body?: string) => void,
-  ) {
+  ): void {
     const payload = data != null ? Buffer.from(JSON.stringify(data)) : undefined;
     const req = http.request(
       {
-        host: '127.0.0.1',
+        host,
         port,
         path: pathName,
         method,
