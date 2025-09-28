@@ -86,7 +86,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     this.pollInterval = Math.max(3000, Math.min(60000, Number(this.config.pollInterval ?? 10000)));
 
     const username = String(this.config.username ?? '');
-    the password = String(this.config.password ?? '');
+    const password = String(this.config.password ?? '');
     if (!username || !password) {
       this.log.warn('Missing username/password in config — plugin idle.');
       return;
