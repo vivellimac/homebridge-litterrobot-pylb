@@ -27,6 +27,7 @@
   "types": "dist/index.d.ts",
   "files": [
     "README.md",
+    "dist",
     "LICENSE",
     "package.json",
     "config.schema.json",
