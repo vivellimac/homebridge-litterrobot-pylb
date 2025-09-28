@@ -1,8 +1,11 @@
-// Lightweight HTTP client for a sidecar; used only if needed in future flows.
 export interface SidecarClientOptions {
   baseUrl: string;          // e.g. http://127.0.0.1:8765
   timeoutMs?: number;
   maxBackoffMs?: number;
+}
+
+function hasOk(x: unknown): x is { ok: unknown } {
+  return typeof x === 'object' && x !== null && 'ok' in x;
 }
 
 export class SidecarClient {
@@ -19,7 +22,7 @@ export class SidecarClient {
   async health(): Promise<boolean> {
     try {
       const r = await this.getJson('/health');
-      return typeof r === 'object' && r !== null && 'ok' in (r as Record<string, unknown>) && Boolean((r as any).ok);
+      return hasOk(r) ? Boolean(r.ok) : false;
     } catch {
       return false;
     }
@@ -28,7 +31,7 @@ export class SidecarClient {
   async listRobots(): Promise<Record<string, unknown>[]> {
     const r = await this.getJson('/robots');
     return Array.isArray(r) ? (r as Record<string, unknown>[]) : [];
-    }
+  }
 
   async status(serial: string): Promise<Record<string, unknown>> {
     const r = await this.getJson(`/status/${encodeURIComponent(serial)}`);
