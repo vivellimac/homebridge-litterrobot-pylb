@@ -78,7 +78,9 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       }
       try {
         const parsed = JSON.parse(body ?? '{}') as { robots?: unknown };
-        const ids: string[] = Array.isArray(parsed.robots) ? (parsed.robots as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+        const ids: string[] = Array.isArray(parsed.robots)
+          ? (parsed.robots as unknown[]).filter((x): x is string => typeof x === 'string')
+          : [];
         ids.forEach((id) => this.upsertRobot(id, pulseMs));
         this.schedulePoll(port, debug, pulseMs);
       } catch (e) {
@@ -245,7 +247,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
         res.on('end', () => cb(null, out));
       },
     );
-    req.on('error', (e) => cb(e as Error));
+    req.on('error', (e: Error) => cb(e)); // <- no assertion, typed param
     if (payload) {
       req.write(payload);
     }
