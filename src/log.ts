@@ -15,27 +15,29 @@ export const getLogger = (ns?: string): Logger => {
   if (!root) {
     throw new Error('Logger not initialized');
   }
-
   if (!ns) {
     return root;
   }
 
+  const base = root; // narrowed
   const prefix = `[${ns}]`;
 
-  // Namespaced wrappers
-  const info: Logger['info'] = (...a: InfoArgs) => root.info(prefix, ...a);
-  const warn: Logger['warn'] = (...a: WarnArgs) => root.warn(prefix, ...a);
-  const error: Logger['error'] = (...a: ErrorArgs) => root.error(prefix, ...a);
+  const info: Logger['info'] = (...a: InfoArgs) => base.info(prefix, ...a);
+  const warn: Logger['warn'] = (...a: WarnArgs) => base.warn(prefix, ...a);
+  const error: Logger['error'] = (...a: ErrorArgs) => base.error(prefix, ...a);
 
-  // Build a Logger that preserves all base members and overrides the methods we care about.
-  const base = root; // type narrowed to Logger after the null-check above
+  let debug: Logger['debug'] | undefined;
+  if (typeof base.debug === 'function') {
+    const dbg = base.debug.bind(base) as (...a: DebugArgs) => void;
+    debug = (...a: DebugArgs) => dbg(prefix, ...a);
+  }
 
   const logger: Logger = {
     ...base,
     info,
     warn,
     error,
-    ...(base.debug ? { debug: (...a: DebugArgs) => base.debug!(prefix, ...a) } : {}),
+    ...(debug ? { debug } : {}),
   };
 
   return logger;
