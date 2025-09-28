@@ -17,6 +17,15 @@ This plugin exposes a simple, reliable HomeKit surface while delegating all Litt
 - **Debug Heartbeat** (single log line per poll)
   - Includes **raw status code** and **label**, e.g. `ccc (Clean Cycle Complete)`, plus key booleans.
 
+
+### Sidecar (FastAPI + pylitterbot)
+This plugin talks to a Python sidecar over HTTP. Point `sidecarUrl` at wherever it’s running:
+- Local HB host: `http://127.0.0.1:8765`
+- Another box/container: `http://host-or-ip:8765`
+
+If the sidecar is down, the plugin will idle and log a single backoff message per retry window; it won’t crash or spam.
+
+
 ---
 
 ## Install (from your Git branch)
