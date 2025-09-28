@@ -26,6 +26,6 @@ This plugin exposes a simple, reliable HomeKit surface while delegating all Litt
 1. In the Homebridge UI, open **Terminal** (or use “Install from GitHub”).
 2. Install from your branch:
    ```bash
-   npm i git+https://github.com/<YOUR_ORG>/homebridge-litterrobot-pylb.git#<YOUR_BRANCH>
+   npm i git+https://github.com/vivellimac/homebridge-litterrobot-pylb.git
 3. Restart Homebridge if the UI doesn’t prompt you.
   - If you use a private repo, make sure Homebridge has access to it.
