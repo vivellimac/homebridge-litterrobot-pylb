@@ -1,7 +1,7 @@
 import type { API } from 'homebridge';
-import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
-import { LitterRobotPlatform } from './platform';
+import { PLATFORM_NAME } from './settings.js';
+import { LitterRobotPlatform } from './platform.js';
 
-export = (api: API) => {
-  api.registerPlatform(PLUGIN_NAME, PLATFORM_NAME, LitterRobotPlatform);
+export default (api: API) => {
+  api.registerPlatform(PLATFORM_NAME, LitterRobotPlatform);
 };
