@@ -11,17 +11,19 @@ const tsStylistic = tseslint.configs.stylisticTypeChecked.map((c) => ({
 }));
 
 export default [
-  // Ignore build + vendor
   { ignores: ['dist/**', 'node_modules/**'] },
 
-  // Base JS rules (applies to .js/.mjs files only; safe for config files)
+  {
+    languageOptions: {
+      globals: { process: 'readonly' }
+    }
+  },
+
   eslint.configs.recommended,
 
-  // TypeScript presets, but explicitly scoped to our TS sources
   ...tsTypeChecked,
   ...tsStylistic,
 
-  // Our strict rules (also scoped to TS files)
   {
     files: ['src/**/*.ts'],
     languageOptions: {
@@ -33,26 +35,19 @@ export default [
         tsconfigRootDir: process.cwd(),
       },
     },
-    plugins: {
-      '@typescript-eslint': tseslint.plugin,
-    },
+    plugins: { '@typescript-eslint': tseslint.plugin },
     rules: {
-      // General strictness
       'no-console': 'error',
       'no-var': 'error',
       'prefer-const': 'error',
       'eqeqeq': ['error', 'smart'],
       'curly': ['error', 'all'],
 
-      // TS-specific strictness
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/await-thenable': 'error',
       '@typescript-eslint/no-floating-promises': 'error',
       '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports' }],
-
-      // Ergonomics
-      '@typescript-eslint/explicit-module-boundary-types': 'off'
     },
   },
 ];
