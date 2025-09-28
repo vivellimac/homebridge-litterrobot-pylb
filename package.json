@@ -1,6 +1,6 @@
 {
   "name": "homebridge-litterrobot-pylb",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Litter-Robot Homebridge plugin with a Python sidecar (pylitterbot).",
   "license": "Apache-2.0",
   "keywords": ["homebridge-plugin", "homekit", "litter-robot", "pylitterbot"],
@@ -20,6 +20,7 @@
   "peerDependencies": {
     "homebridge": ">=1.6.0"
   },
+  "peerDependencies": { "homebridge": ">=1.6.0" },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": ["dist", "README.md", "LICENSE", "package.json", "config.schema.json", "sidecar"],
@@ -29,10 +30,9 @@
     "lint": "eslint . --max-warnings=0",
     "test": "node -e \"console.log(JSON.stringify({ok:true}))\""
   },
-  "dependencies": {
-    "homebridge": "^1.7.0"
-  },
+  "dependencies": {},
   "devDependencies": {
+    "homebridge": "^1.7.0",
     "typescript": "^5.6.3",
     "eslint": "^9.36.0",
     "typescript-eslint": "^8.13.0",
