@@ -21,7 +21,7 @@
     "homebridge": ">=1.6.0"
   },
   "peerDependencies": { "homebridge": ">=1.6.0" },
-  "main": "dist/index.cjs",
+  "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": ["dist", "README.md", "LICENSE", "package.json", "config.schema.json", "sidecar"],
   "scripts": {
