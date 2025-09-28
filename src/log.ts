@@ -6,12 +6,15 @@ export const initRootLogger = (l: Logger): void => {
   if (!root) root = l;
 };
 
-type InfoArgs = Parameters<Logger['info']>;
-type WarnArgs = Parameters<Logger['warn']>;
-type ErrorArgs = Parameters<Logger['error']>;
-type SuccessArgs = Parameters<Logger['success']>;
-type LogArgs = Parameters<Logger['log']>;     // [level, message, ...parameters]
-type DebugArgs = Parameters<Logger['debug']>;  // (message, ...parameters)
+type LogLevelParam = Parameters<Logger['log']>[0];
+
+const tail = (params: unknown[]): string =>
+  params.length
+    ? ' ' +
+      params
+        .map((p) => (typeof p === 'string' ? p : (() => { try { return JSON.stringify(p); } catch { return String(p); } })()))
+        .join(' ')
+    : '';
 
 export const getLogger = (ns?: string): Logger => {
   if (!root) {
@@ -24,31 +27,27 @@ export const getLogger = (ns?: string): Logger => {
   const base = root;
   const prefix = `[${ns}] `;
 
-  // Prefix the message argument for each method
-  const info: Logger['info'] = (message: InfoArgs[0], ...parameters: InfoArgs.slice(1)) =>
-    base.info(`${prefix}${message}`, ...parameters);
+  const info: Logger['info'] = (message: string, ...parameters: unknown[]) =>
+    base.info(`${prefix}${message}${tail(parameters)}`);
 
-  const warn: Logger['warn'] = (message: WarnArgs[0], ...parameters: WarnArgs.slice(1)) =>
-    base.warn(`${prefix}${message}`, ...parameters);
+  const warn: Logger['warn'] = (message: string, ...parameters: unknown[]) =>
+    base.warn(`${prefix}${message}${tail(parameters)}`);
 
-  const error: Logger['error'] = (message: ErrorArgs[0], ...parameters: ErrorArgs.slice(1)) =>
-    base.error(`${prefix}${message}`, ...parameters);
+  const error: Logger['error'] = (message: string, ...parameters: unknown[]) =>
+    base.error(`${prefix}${message}${tail(parameters)}`);
 
-  const success: Logger['success'] = (message: SuccessArgs[0], ...parameters: SuccessArgs.slice(1)) =>
-    base.success(`${prefix}${message}`, ...parameters);
+  const success: Logger['success'] = (message: string, ...parameters: unknown[]) =>
+    base.success(`${prefix}${message}${tail(parameters)}`);
 
-  const log: Logger['log'] = (level: LogArgs[0], message: LogArgs[1], ...parameters: LogArgs.slice(2)) =>
-    base.log(level, `${prefix}${message}`, ...parameters);
+  const log: Logger['log'] = (level: LogLevelParam, message: string, ...parameters: unknown[]) =>
+    base.log(level, `${prefix}${message}${tail(parameters)}`);
 
-  // Always provide a debug; fall back to info if base.debug is missing
-  const debugImpl = typeof base.debug === 'function'
-    ? base.debug.bind(base)
-    : base.info.bind(base);
+  // Always provide a debug; fall back to info if base.debug isn't present at runtime
+  const debugImpl = typeof base.debug === 'function' ? base.debug.bind(base) : base.info.bind(base);
+  const debug: Logger['debug'] = (message: string, ...parameters: unknown[]) =>
+    debugImpl(`${prefix}${message}${tail(parameters)}`);
 
-  const debug: Logger['debug'] = (message: DebugArgs[0], ...parameters: DebugArgs.slice(1)) =>
-    debugImpl(`${prefix}${message}`, ...parameters);
-
-  // Return concrete Logger (no spreads that drop members)
+  // Return a concrete Logger with required methods
   const logger: Logger = { info, warn, error, success, log, debug };
   return logger;
 };
