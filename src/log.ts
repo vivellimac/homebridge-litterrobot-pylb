@@ -9,9 +9,9 @@ export const initRootLogger = (l: Logger): void => {
 type InfoArgs = Parameters<Logger['info']>;
 type WarnArgs = Parameters<Logger['warn']>;
 type ErrorArgs = Parameters<Logger['error']>;
-type LogArgs = Parameters<Logger['log']>;
 type SuccessArgs = Parameters<Logger['success']>;
-type DebugArgs = Logger['debug'] extends (...a: infer P) => any ? P : never;
+type LogArgs = Parameters<Logger['log']>;     // [level, message, ...parameters]
+type DebugArgs = Parameters<Logger['debug']>;  // (message, ...parameters)
 
 export const getLogger = (ns?: string): Logger => {
   if (!root) {
@@ -21,25 +21,34 @@ export const getLogger = (ns?: string): Logger => {
     return root;
   }
 
-  const base = root; // narrowed
-  const prefix = `[${ns}]`;
+  const base = root;
+  const prefix = `[${ns}] `;
 
-  const info: Logger['info'] = (...a: InfoArgs) => base.info(prefix, ...a);
-  const warn: Logger['warn'] = (...a: WarnArgs) => base.warn(prefix, ...a);
-  const error: Logger['error'] = (...a: ErrorArgs) => base.error(prefix, ...a);
-  const log: Logger['log'] = (...a: LogArgs) => base.log(prefix, ...a);
-  const success: Logger['success'] = (...a: SuccessArgs) => base.success(prefix, ...a);
+  // Prefix the message argument for each method
+  const info: Logger['info'] = (message: InfoArgs[0], ...parameters: InfoArgs.slice(1)) =>
+    base.info(`${prefix}${message}`, ...parameters);
 
-  let debug: Logger['debug'] | undefined;
-  if (typeof base.debug === 'function') {
-    const dbg = base.debug.bind(base) as (...a: DebugArgs) => void;
-    debug = (...a: DebugArgs) => dbg(prefix, ...a);
-  } else {
-    debug = undefined;
-  }
+  const warn: Logger['warn'] = (message: WarnArgs[0], ...parameters: WarnArgs.slice(1)) =>
+    base.warn(`${prefix}${message}`, ...parameters);
 
-  // Return a concrete Logger with all required methods overridden to include the prefix.
-  const logger: Logger = { info, warn, error, log, success, debug };
+  const error: Logger['error'] = (message: ErrorArgs[0], ...parameters: ErrorArgs.slice(1)) =>
+    base.error(`${prefix}${message}`, ...parameters);
 
+  const success: Logger['success'] = (message: SuccessArgs[0], ...parameters: SuccessArgs.slice(1)) =>
+    base.success(`${prefix}${message}`, ...parameters);
+
+  const log: Logger['log'] = (level: LogArgs[0], message: LogArgs[1], ...parameters: LogArgs.slice(2)) =>
+    base.log(level, `${prefix}${message}`, ...parameters);
+
+  // Always provide a debug; fall back to info if base.debug is missing
+  const debugImpl = typeof base.debug === 'function'
+    ? base.debug.bind(base)
+    : base.info.bind(base);
+
+  const debug: Logger['debug'] = (message: DebugArgs[0], ...parameters: DebugArgs.slice(1)) =>
+    debugImpl(`${prefix}${message}`, ...parameters);
+
+  // Return concrete Logger (no spreads that drop members)
+  const logger: Logger = { info, warn, error, success, log, debug };
   return logger;
 };
