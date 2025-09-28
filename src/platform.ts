@@ -28,7 +28,11 @@ interface RobotStatus {
   offline: boolean;
 }
 
-type LastState = { cycle: boolean; idle: boolean; code: string | null };
+interface LastState {
+  cycle: boolean;
+  idle: boolean;
+  code: string | null;
+}
 
 export class LitterRobotPlatform implements DynamicPlatformPlugin {
   public Service!: typeof Service;
@@ -138,9 +142,13 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       // Controls
       const sw = acc.addService(this.Service.Switch, 'Cycle Now');
       sw.getCharacteristic(this.Characteristic.On).onSet((val) => {
-        if (!val) return;
+        if (!val) {
+          return;
+        }
         this.request('POST', Number(this.config.port ?? 8765), `/cycle/${id}`, {}, (err) => {
-          if (err) this.log.warn('Cycle command failed:', String(err));
+          if (err) {
+            this.log.warn('Cycle command failed:', String(err));
+          }
           setTimeout(() => {
             sw.updateCharacteristic(this.Characteristic.On, false);
           }, 500);
@@ -172,12 +180,16 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
   private pollOnce(port: number, debug: boolean, pulseMs: number) {
     for (const acc of this.accessories.values()) {
       const id = String(acc.context.robotId ?? '');
-      if (!id) continue;
+      if (!id) {
+        continue;
+      }
 
       this.getStatus(id, port, (st) => {
         // Reflect switch
-        acc.getService(this.Service.Switch)
-          ?.updateCharacteristic(this.Characteristic.On, st.cycle);
+        const switchSvc = acc.getService(this.Service.Switch);
+        if (switchSvc) {
+          switchSvc.updateCharacteristic(this.Characteristic.On, st.cycle);
+        }
 
         // Convenience helpers for service lookups by subtype
         const bonnetSvc = acc.getServiceById(this.Service.ContactSensor, 'Bonnet');
@@ -187,44 +199,54 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
         const faultSvc = acc.getServiceById(this.Service.ContactSensor, 'CycleFault');
 
         // Basic sensors
-        bonnetSvc?.updateCharacteristic(
-          this.Characteristic.ContactSensorState,
-          st.bonnet
-            ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
-            : this.Characteristic.ContactSensorState.CONTACT_DETECTED,
-        );
+        if (bonnetSvc) {
+          bonnetSvc.updateCharacteristic(
+            this.Characteristic.ContactSensorState,
+            st.bonnet
+              ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+              : this.Characteristic.ContactSensorState.CONTACT_DETECTED,
+          );
+        }
 
-        pinchSvc?.updateCharacteristic(
-          this.Characteristic.ContactSensorState,
-          st.pinch
-            ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
-            : this.Characteristic.ContactSensorState.CONTACT_DETECTED,
-        );
+        if (pinchSvc) {
+          pinchSvc.updateCharacteristic(
+            this.Characteristic.ContactSensorState,
+            st.pinch
+              ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+              : this.Characteristic.ContactSensorState.CONTACT_DETECTED,
+          );
+        }
 
-        offlineSvc?.updateCharacteristic(
-          this.Characteristic.OccupancyDetected,
-          st.offline
-            ? this.Characteristic.OccupancyDetected.OCCUPANCY_DETECTED
-            : this.Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED,
-        );
+        if (offlineSvc) {
+          offlineSvc.updateCharacteristic(
+            this.Characteristic.OccupancyDetected,
+            st.offline
+              ? this.Characteristic.OccupancyDetected.OCCUPANCY_DETECTED
+              : this.Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED,
+          );
+        }
 
         // Fault (OPEN on any fault-ish condition)
         const isFault = Boolean(st.pinch || st.bonnet || st.paused || st.offline);
-        faultSvc?.updateCharacteristic(
-          this.Characteristic.ContactSensorState,
-          isFault
-            ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
-            : this.Characteristic.ContactSensorState.CONTACT_DETECTED,
-        );
+        if (faultSvc) {
+          faultSvc.updateCharacteristic(
+            this.Characteristic.ContactSensorState,
+            isFault
+              ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+              : this.Characteristic.ContactSensorState.CONTACT_DETECTED,
+          );
+        }
 
         // Completed pulse by state transition (cycle -> false && idle -> true)
         const last = (acc.context._last ?? { cycle: false, idle: false, code: null }) as LastState;
         if (last.cycle && !st.cycle && st.idle) {
           const ms = Number(acc.context._pulseMs ?? pulseMs);
-          completedSvc?.updateCharacteristic(this.Characteristic.MotionDetected, true);
-          setTimeout(() => {
-            completedSvc?.updateCharacteristic(this.Characteristic.MotionDetected, false);
-          }, ms);
+          if (completedSvc) {
+            completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, true);
+            setTimeout(() => {
+              completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, false);
+            }, ms);
+          }
         }
 
         // Capture raw status_code for future transitions
@@ -247,13 +269,17 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
   private getStatus(id: string, port: number, cb: (s: RobotStatus) => void) {
     this.request('GET', port, `/status/${id}`, undefined, (err, body) => {
       if (err) {
-        this.log.debug?.('status error', String(err));
+        if (this.log.debug) {
+          this.log.debug('status error', String(err));
+        }
         return;
       }
       try {
         const parsed = JSON.parse(body ?? '{}') as Partial<RobotStatus>;
         // Basic shape validation
-        if (typeof parsed.id !== 'string') return;
+        if (typeof parsed.id !== 'string') {
+          return;
+        }
 
         // Fill required booleans with safe defaults if missing
         const s: RobotStatus = {
@@ -306,7 +332,9 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       },
     );
     req.on('error', (e: Error) => cb(e));
-    if (payload) req.write(payload);
+    if (payload) {
+      req.write(payload);
+    }
     req.end();
   }
 }
