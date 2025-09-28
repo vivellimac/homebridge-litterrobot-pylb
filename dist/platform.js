@@ -44,38 +44,94 @@ class LitterRobotPlatform {
     (0, node_fs_1.mkdirSync)(workdir, { recursive: true });
     const pluginDir = (0, node_path_1.join)(this.api.user.storagePath(), 'node_modules', settings_1.PLUGIN_NAME);
     const bootstrap = (0, node_path_1.join)(pluginDir, 'sidecar', 'bootstrap.py');
-    this.py = (0, node_child_process_1.spawn)(pyExec, [bootstrap, '--workdir', workdir, '--port', String(port)], { stdio: 'ignore' });
-    this.request('POST', port, '/login', { username, password }, (err, body) => {
-      if (err) {
-        this.log.error('Login failed:', err.message);
-        return;
-      }
-      try {
-        const parsed = JSON.parse(body ?? '{}');
-        const ids = Array.isArray(parsed.robots)
-          ? parsed.robots.filter((x) => typeof x === 'string')
-          : [];
-        ids.forEach((id) => this.upsertRobot(id, pulseMs));
-        if (this.poll) {
-          clearInterval(this.poll);
-        }
-        this.poll = setInterval(() => this.pollOnce(port, debug, pulseMs), pollInterval);
-      }
-      catch (e) {
-        this.log.error('Login parse error', String(e));
-      }
+
+    // launch sidecar
+    try {
+      this.py = (0, node_child_process_1.spawn)(pyExec, [bootstrap, '--workdir', workdir, '--port', String(port)], { stdio: 'ignore' });
+      this.py.on('exit', (code, signal) => {
+        this.log.warn(`Sidecar exited (code=${code ?? 'n/a'} signal=${signal ?? 'n/a'})`);
+      });
+    } catch (e) {
+      this.log.error('Failed to spawn sidecar:', String(e));
+    }
+
+    // --- helpers: wait for /health, then login with retry/backoff
+    const waitForHealthOnce = (giveUpMs = 60000) => new Promise((resolve) => {
+      const t0 = Date.now();
+      const tryOnce = () => {
+        this.request('GET', port, '/health', undefined, (err, body) => {
+          let ok = false;
+          if (!err) {
+            try { ok = !!JSON.parse(body ?? '{}').ok; } catch { ok = false; }
+          }
+          if (ok) {
+            if (debug) this.log.info(`Sidecar healthy at http://127.0.0.1:${port}`);
+            return resolve(true);
+          }
+          if (Date.now() - t0 > giveUpMs) {
+            return resolve(false);
+          }
+          setTimeout(tryOnce, 1000);
+        });
+      };
+      tryOnce();
     });
+
+    const loginWithRetry = () => {
+      const startTs = Date.now();
+      const attempt = (delayMs) => setTimeout(() => {
+        this.request('POST', port, '/login', { username, password }, (err, body) => {
+          if (err) {
+            if (Date.now() - startTs < 30000) {
+              if (debug) this.log.info(`Login retry after error: ${err.message}`);
+              return attempt(1500);
+            }
+            this.log.error('Login failed:', err.message);
+            return;
+          }
+          try {
+            const parsed = JSON.parse(body ?? '{}');
+            const ids = Array.isArray(parsed.robots) ? parsed.robots.filter((x) => typeof x === 'string') : [];
+            ids.forEach((id) => this.upsertRobot(id, pulseMs));
+            if (this.poll) clearInterval(this.poll);
+            this.poll = setInterval(() => this.pollOnce(port, debug, pulseMs), pollInterval);
+          } catch (e) {
+            this.log.error('Login parse error', String(e));
+          }
+        });
+      }, delayMs);
+      attempt(0);
+    };
+
+    const waitLoop = async () => {
+      // initial wait up to 60s
+      const ok = await waitForHealthOnce(60000);
+      if (!ok) {
+        this.log.warn(`Sidecar not ready yet at http://127.0.0.1:${port}; will keep waiting...`);
+      }
+      // keep waiting every 5s until healthy
+      while (!(await waitForHealthOnce(2500))) {
+        await new Promise(r => setTimeout(r, 5000));
+      }
+      // got healthy -> login (with its own connection retry)
+      loginWithRetry();
+    };
+
+    if (debug) this.log.info('Waiting for sidecar health...');
+    void waitLoop();
   }
+
   stop() {
     if (this.poll) {
       clearInterval(this.poll);
       this.poll = undefined;
     }
     if (this.py) {
-      this.py.kill();
+      try { this.py.kill(); } catch { /* ignore */ }
       this.py = null;
     }
   }
+
   // ---------- accessories ----------
   upsertRobot(id, pulseMs) {
     const uuid = this.api.hap.uuid.generate(id);
@@ -83,90 +139,101 @@ class LitterRobotPlatform {
     if (!acc) {
       acc = new this.api.platformAccessory(`Litter-Robot ${id.slice(-4)}`, uuid);
       acc.context.robotId = id;
+
       const sw = acc.addService(this.Service.Switch, 'Cycle Now');
       sw.getCharacteristic(this.Characteristic.On).onSet((val) => {
-        if (!val) {
-          return;
-        }
+        if (!val) return;
         this.request('POST', Number(this.config.port ?? 8765), `/cycle/${id}`, {}, (err) => {
-          if (err) {
-            this.log.warn('Cycle command failed:', String(err));
-          }
-          setTimeout(() => {
-            sw.updateCharacteristic(this.Characteristic.On, false);
-          }, 500);
+          if (err) this.log.warn('Cycle command failed:', String(err));
+          setTimeout(() => sw.updateCharacteristic(this.Characteristic.On, false), 500);
         });
       });
+
       acc.addService(this.Service.ContactSensor, 'Bonnet', 'Bonnet');
       acc.addService(this.Service.ContactSensor, 'Pinch', 'Pinch');
       acc.addService(this.Service.OccupancySensor, 'Offline', 'Offline');
       acc.addService(this.Service.MotionSensor, 'Cycle Completed', 'CycleCompleted');
       acc.addService(this.Service.ContactSensor, 'Cycle Fault', 'CycleFault');
+
       acc.context._last = { cycle: false, idle: false, code: null };
       acc.context._pulseMs = pulseMs;
+
       this.api.registerPlatformAccessories(settings_1.PLUGIN_NAME, settings_1.PLATFORM_NAME, [acc]);
       this.accessories.set(uuid, acc);
     }
   }
+
   // ---------- polling / mapping ----------
   pollOnce(port, debug, pulseMs) {
     for (const acc of this.accessories.values()) {
       const id = String(acc.context.robotId ?? '');
-      if (!id) {
-        continue;
-      }
+      if (!id) continue;
+
       this.getStatus(id, port, (st) => {
         const switchSvc = acc.getService(this.Service.Switch);
-        if (switchSvc) {
-          switchSvc.updateCharacteristic(this.Characteristic.On, st.cycle);
-        }
+        if (switchSvc) switchSvc.updateCharacteristic(this.Characteristic.On, st.cycle);
+
         const bonnetSvc = acc.getServiceById(this.Service.ContactSensor, 'Bonnet');
         const pinchSvc = acc.getServiceById(this.Service.ContactSensor, 'Pinch');
         const offlineSvc = acc.getServiceById(this.Service.OccupancySensor, 'Offline');
         const completedSvc = acc.getServiceById(this.Service.MotionSensor, 'CycleCompleted');
         const faultSvc = acc.getServiceById(this.Service.ContactSensor, 'CycleFault');
+
         if (bonnetSvc) {
-          bonnetSvc.updateCharacteristic(this.Characteristic.ContactSensorState, st.bonnet
-            ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
-            : this.Characteristic.ContactSensorState.CONTACT_DETECTED);
+          bonnetSvc.updateCharacteristic(
+            this.Characteristic.ContactSensorState,
+            st.bonnet ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+                      : this.Characteristic.ContactSensorState.CONTACT_DETECTED,
+          );
         }
+
         if (pinchSvc) {
-          pinchSvc.updateCharacteristic(this.Characteristic.ContactSensorState, st.pinch
-            ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
-            : this.Characteristic.ContactSensorState.CONTACT_DETECTED);
+          pinchSvc.updateCharacteristic(
+            this.Characteristic.ContactSensorState,
+            st.pinch ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+                     : this.Characteristic.ContactSensorState.CONTACT_DETECTED,
+          );
         }
+
         if (offlineSvc) {
-          offlineSvc.updateCharacteristic(this.Characteristic.OccupancyDetected, st.offline
-            ? this.Characteristic.OccupancyDetected.OCCUPANCY_DETECTED
-            : this.Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED);
+          offlineSvc.updateCharacteristic(
+            this.Characteristic.OccupancyDetected,
+            st.offline ? this.Characteristic.OccupancyDetected.OCCUPANCY_DETECTED
+                       : this.Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED,
+          );
         }
+
         const isFault = Boolean(st.pinch || st.bonnet || st.paused || st.offline);
         if (faultSvc) {
-          faultSvc.updateCharacteristic(this.Characteristic.ContactSensorState, isFault
-            ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
-            : this.Characteristic.ContactSensorState.CONTACT_DETECTED);
+          faultSvc.updateCharacteristic(
+            this.Characteristic.ContactSensorState,
+            isFault ? this.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+                    : this.Characteristic.ContactSensorState.CONTACT_DETECTED,
+          );
         }
+
         const last = (acc.context._last ?? { cycle: false, idle: false, code: null });
-        if (last.cycle && !st.cycle && st.idle) {
+        if (last.cycle && !st.cycle && st.idle && completedSvc) {
           const ms = Number(acc.context._pulseMs ?? pulseMs);
-          if (completedSvc) {
-            completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, true);
-            setTimeout(() => {
-              completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, false);
-            }, ms);
-          }
+          completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, true);
+          setTimeout(() => completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, false), ms);
         }
+
         const code = (st.status_code ?? null);
         const label = (st.status_label ?? null);
         acc.context._last = { cycle: st.cycle, idle: st.idle, code };
+
         if (debug) {
-          this.log.info(`status: code=${code ?? 'n/a'}${label ? `(${label})` : ''} ` +
+          this.log.info(
+            `status: code=${code ?? 'n/a'}${label ? `(${label})` : ''} ` +
             `cycle=${st.cycle} idle=${st.idle} pinch=${st.pinch} bonnet=${st.bonnet} ` +
-            `home=${st.home} paused=${st.paused} offline=${st.offline}`);
+            `home=${st.home} paused=${st.paused} offline=${st.offline}`
+          );
         }
       });
     }
   }
+
   getStatus(id, port, cb) {
     this.request('GET', port, `/status/${id}`, undefined, (err, body) => {
       var _a;
@@ -176,9 +243,7 @@ class LitterRobotPlatform {
       }
       try {
         const parsed = JSON.parse(body ?? '{}');
-        if (typeof parsed.id !== 'string') {
-          return;
-        }
+        if (typeof parsed.id !== 'string') return;
         const s = {
           id: parsed.id,
           name: typeof parsed.name === 'string' ? parsed.name : parsed.id,
@@ -193,12 +258,10 @@ class LitterRobotPlatform {
           offline: Boolean(parsed.offline),
         };
         cb(s);
-      }
-      catch (_b) {
-        // ignore parse errors silently to avoid log spam
-      }
+      } catch { /* ignore parse errors */ }
     });
   }
+
   // ---------- http helper ----------
   request(method, port, pathName, data, cb) {
     const payload = data != null ? Buffer.from(JSON.stringify(data)) : undefined;
@@ -207,21 +270,15 @@ class LitterRobotPlatform {
       port,
       path: pathName,
       method,
-      headers: payload
-        ? { 'content-type': 'application/json', 'content-length': String(payload.length) }
-        : undefined,
+      headers: payload ? { 'content-type': 'application/json', 'content-length': String(payload.length) } : undefined,
       timeout: 8000,
     }, (res) => {
       let out = '';
-      res.on('data', (c) => {
-        out += c.toString('utf8');
-      });
+      res.on('data', (c) => { out += c.toString('utf8'); });
       res.on('end', () => cb(null, out));
     });
     req.on('error', (e) => cb(e));
-    if (payload) {
-      req.write(payload);
-    }
+    if (payload) req.write(payload);
     req.end();
   }
 }
