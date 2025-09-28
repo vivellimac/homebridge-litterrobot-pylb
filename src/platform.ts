@@ -1,150 +1,179 @@
-import type { API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
-
-import { ExamplePlatformAccessory } from './platformAccessory.js';
+import type {
+  API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic,
+} from 'homebridge';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
+import { initRootLogger } from './log.js';
+import { spawn, type ChildProcess } from 'node:child_process';
+import http from 'node:http';
+import path from 'node:path';
+import fs from 'node:fs';
 
-// This is only required when using Custom Services and Characteristics not support by HomeKit
-import { EveHomeKitTypes } from 'homebridge-lib/EveHomeKitTypes';
+type RobotStatus = {
+  id: string; name: string;
+  status_code?: string | null;   // e.g. "ccc", "ccp", "csf", ...
+  status_label?: string | null;  // human-readable label from sidecar
+  cycle: boolean; idle: boolean; pinch: boolean; bonnet: boolean; home: boolean; paused: boolean; offline: boolean;
+};
 
-/**
- * HomebridgePlatform
- * This class is the main constructor for your plugin, this is where you should
- * parse the user config and discover/register accessories with Homebridge.
- */
-export class ExampleHomebridgePlatform implements DynamicPlatformPlugin {
-  public readonly Service: typeof Service;
-  public readonly Characteristic: typeof Characteristic;
+export class LitterRobotPlatform implements DynamicPlatformPlugin {
+  public readonly Service: typeof Service = this.api.hap.Service;
+  public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
 
-  // this is used to track restored cached accessories
-  public readonly accessories: Map<string, PlatformAccessory> = new Map();
-  public readonly discoveredCacheUUIDs: string[] = [];
-
-  // This is only required when using Custom Services and Characteristics not support by HomeKit
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  public readonly CustomServices: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  public readonly CustomCharacteristics: any;
+  private accessories = new Map<string, PlatformAccessory>();
+  private py: ChildProcess | null = null;
+  private poll?: NodeJS.Timeout;
 
   constructor(
-    public readonly log: Logging,
-    public readonly config: PlatformConfig,
-    public readonly api: API,
+    private readonly log: Logger,
+    private readonly config: PlatformConfig,
+    private readonly api: API,
   ) {
-    this.Service = api.hap.Service;
-    this.Characteristic = api.hap.Characteristic;
+    initRootLogger(log);
+    this.api.on('didFinishLaunching', () => this.start());
+    this.api.on('shutdown', () => this.stop());
+  }
 
-    // This is only required when using Custom Services and Characteristics not support by HomeKit
-    this.CustomServices = new EveHomeKitTypes(this.api).Services;
-    this.CustomCharacteristics = new EveHomeKitTypes(this.api).Characteristics;
+  configureAccessory(acc: PlatformAccessory) {
+    this.accessories.set(acc.UUID, acc);
+  }
 
-    this.log.debug('Finished initializing platform:', this.config.name);
+  private start() {
+    const port = Number(this.config.port ?? 8765);
+    const workdir = String(this.config.workdir || path.join(this.api.user.storagePath(), 'lr-sidecar'));
+    const pyExec = String(this.config.python || '/usr/bin/python3');
+    const debug = Boolean(this.config.debug);
+    const pulseMs = Math.max(250, Math.min(10000, Number(this.config.pulseMs ?? 1500)));
 
-    // When this event is fired it means Homebridge has restored all cached accessories from disk.
-    // Dynamic Platform plugins should only register new accessories after this event was fired,
-    // in order to ensure they weren't added to homebridge already. This event can also be used
-    // to start discovery of new accessories.
-    this.api.on('didFinishLaunching', () => {
-      log.debug('Executed didFinishLaunching callback');
-      // run the method to discover / register your devices as accessories
-      this.discoverDevices();
+    const username = String(this.config.username || '');
+    const password = String(this.config.password || '');
+    if (!username || !password) {
+      this.log.warn('Missing username/password in config — plugin idle.');
+      return;
+    }
+
+    fs.mkdirSync(workdir, { recursive: true });
+    const here = path.dirname(new URL(import.meta.url).pathname);
+    const bootstrap = path.join(here, '..', 'sidecar', 'bootstrap.py');
+    this.py = spawn(pyExec, [bootstrap, '--workdir', workdir, '--port', String(port)], { stdio: 'ignore' });
+
+    this.request('POST', port, '/login', { username, password }, (err, body) => {
+      if (err) { this.log.error('Login failed:', err.message); return; }
+      try {
+        const ids: string[] = JSON.parse(body ?? '{}').robots ?? [];
+        ids.forEach((id) => this.upsertRobot(id, pulseMs));
+        this.schedulePoll(port, debug, pulseMs);
+      } catch (e) {
+        this.log.error('Login parse error', String(e));
+      }
     });
   }
 
-  /**
-   * This function is invoked when homebridge restores cached accessories from disk at startup.
-   * It should be used to set up event handlers for characteristics and update respective values.
-   */
-  configureAccessory(accessory: PlatformAccessory) {
-    this.log.info('Loading accessory from cache:', accessory.displayName);
-
-    // add the restored accessory to the accessories cache, so we can track if it has already been registered
-    this.accessories.set(accessory.UUID, accessory);
+  private stop() {
+    if (this.poll) { clearInterval(this.poll); this.poll = undefined; }
+    if (this.py) { this.py.kill(); this.py = null; }
   }
 
-  /**
-   * This is an example method showing how to register discovered accessories.
-   * Accessories must only be registered once, previously created accessories
-   * must not be registered again to prevent "duplicate UUID" errors.
-   */
-  discoverDevices() {
-    // EXAMPLE ONLY
-    // A real plugin you would discover accessories from the local network, cloud services
-    // or a user-defined array in the platform config.
-    const exampleDevices = [
-      {
-        exampleUniqueId: 'ABCD',
-        exampleDisplayName: 'Bedroom',
-      },
-      {
-        exampleUniqueId: 'EFGH',
-        exampleDisplayName: 'Kitchen',
-      },
-      {
-        // This is an example of a device which uses a Custom Service
-        exampleUniqueId: 'IJKL',
-        exampleDisplayName: 'Backyard',
-        CustomService: 'AirPressureSensor',
-      },
-    ];
+  private upsertRobot(id: string, pulseMs: number) {
+    const uuid = this.api.hap.uuid.generate(id);
+    let acc = this.accessories.get(uuid);
+    if (!acc) {
+      acc = new this.api.platformAccessory(`Litter-Robot ${id.slice(-4)}`, uuid);
+      acc.context.robotId = id;
 
-    // loop over the discovered devices and register each one if it has not already been registered
-    for (const device of exampleDevices) {
-      // generate a unique id for the accessory this should be generated from
-      // something globally unique, but constant, for example, the device serial
-      // number or MAC address
-      const uuid = this.api.hap.uuid.generate(device.exampleUniqueId);
+      // Controls
+      const sw = acc.addService(this.Service.Switch, 'Cycle Now');
+      sw.getCharacteristic(this.Characteristic.On).onSet(async (val) => {
+        if (!val) return;
+        this.request('POST', Number(this.config.port ?? 8765), `/cycle/${id}`, {}, (err) => {
+          if (err) this.log.warn('Cycle command failed:', String(err));
+          setTimeout(() => sw.updateCharacteristic(this.Characteristic.On, false), 500);
+        });
+      });
 
-      // see if an accessory with the same uuid has already been registered and restored from
-      // the cached devices we stored in the `configureAccessory` method above
-      const existingAccessory = this.accessories.get(uuid);
+      // Simple state sensors
+      acc.addService(this.Service.ContactSensor, 'Bonnet', 'Bonnet');
+      acc.addService(this.Service.ContactSensor, 'Pinch', 'Pinch');
+      acc.addService(this.Service.OccupancySensor, 'Offline', 'Offline');
 
-      if (existingAccessory) {
-        // the accessory already exists
-        this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
+      // Automation-friendly sensors
+      acc.addService(this.Service.MotionSensor, 'Cycle Completed', 'CycleCompleted');
+      acc.addService(this.Service.ContactSensor, 'Cycle Fault', 'CycleFault');
 
-        // if you need to update the accessory.context then you should run `api.updatePlatformAccessories`. e.g.:
-        // existingAccessory.context.device = device;
-        // this.api.updatePlatformAccessories([existingAccessory]);
+      // Track last state & last code for future transitions
+      acc.context._last = { cycle: false, idle: false, code: null as string | null };
 
-        // create the accessory handler for the restored accessory
-        // this is imported from `platformAccessory.ts`
-        new ExamplePlatformAccessory(this, existingAccessory);
+      // Pulse duration
+      acc.context._pulseMs = pulseMs;
 
-        // it is possible to remove platform accessories at any time using `api.unregisterPlatformAccessories`, e.g.:
-        // remove platform accessories when no longer present
-        // this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [existingAccessory]);
-        // this.log.info('Removing existing accessory from cache:', existingAccessory.displayName);
-      } else {
-        // the accessory does not yet exist, so we need to create it
-        this.log.info('Adding new accessory:', device.exampleDisplayName);
-
-        // create a new accessory
-        const accessory = new this.api.platformAccessory(device.exampleDisplayName, uuid);
-
-        // store a copy of the device object in the `accessory.context`
-        // the `context` property can be used to store any data about the accessory you may need
-        accessory.context.device = device;
-
-        // create the accessory handler for the newly create accessory
-        // this is imported from `platformAccessory.ts`
-        new ExamplePlatformAccessory(this, accessory);
-
-        // link the accessory to your platform
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-      }
-
-      // push into discoveredCacheUUIDs
-      this.discoveredCacheUUIDs.push(uuid);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [acc]);
+      this.accessories.set(uuid, acc);
     }
+  }
 
-    // you can also deal with accessories from the cache which are no longer present by removing them from Homebridge
-    // for example, if your plugin logs into a cloud account to retrieve a device list, and a user has previously removed a device
-    // from this cloud account, then this device will no longer be present in the device list but will still be in the Homebridge cache
-    for (const [uuid, accessory] of this.accessories) {
-      if (!this.discoveredCacheUUIDs.includes(uuid)) {
-        this.log.info('Removing existing accessory from cache:', accessory.displayName);
-        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+  private schedulePoll(port: number, debug: boolean, pulseMs: number) {
+    const interval = Math.max(3000, Math.min(60000, Number(this.config.pollInterval ?? 5000)));
+    this.poll = setInterval(() => {
+      for (const acc of this.accessories.values()) {
+        const id = acc.context.robotId as string;
+        this.getStatus(id, port, (st) => {
+          // Reflect switch
+          acc.getService(this.Service.Switch)?.updateCharacteristic(this.Characteristic.On, st.cycle);
+
+          // Basic sensors
+          acc.getService('Bonnet')?.updateCharacteristic(this.Characteristic.ContactSensorState, st.bonnet ? 1 : 0);
+          acc.getService('Pinch')?.updateCharacteristic(this.Characteristic.ContactSensorState, st.pinch ? 1 : 0);
+          acc.getService('Offline')?.updateCharacteristic(this.Characteristic.OccupancyDetected, st.offline ? 1 : 0);
+
+          // Fault (OPEN on any fault-ish condition)
+          const isFault = Boolean(st.pinch || st.bonnet || st.paused || st.offline);
+          acc.getService('CycleFault')?.updateCharacteristic(this.Characteristic.ContactSensorState, isFault ? 1 : 0);
+
+          // Completed pulse by state transition (cycle -> false && idle -> true)
+          const last = acc.context._last as { cycle: boolean; idle: boolean; code: string | null };
+          if (last && last.cycle && !st.cycle && st.idle) {
+            const ms = Number(acc.context._pulseMs ?? pulseMs);
+            const svc = acc.getService('CycleCompleted');
+            svc?.updateCharacteristic(this.Characteristic.MotionDetected, true);
+            setTimeout(() => svc?.updateCharacteristic(this.Characteristic.MotionDetected, false), ms);
+          }
+
+          // Capture raw status_code for future transitions
+          const code = st.status_code ?? null;
+          const label = st.status_label ?? null;
+          acc.context._last = { cycle: st.cycle, idle: st.idle, code };
+
+          // Heartbeat (single line) — includes code + label + key booleans
+          if (debug) {
+            this.log.info(
+              `status: code=${code ?? 'n/a'}${label ? `(${label})` : ''} cycle=${st.cycle} idle=${st.idle} pinch=${st.pinch} bonnet=${st.bonnet} home=${st.home} paused=${st.paused} offline=${st.offline}`,
+            );
+          }
+        });
       }
-    }
+    }, interval);
+  }
+
+  private getStatus(id: string, port: number, cb: (s: RobotStatus)=>void) {
+    this.request('GET', port, `/status/${id}`, undefined, (err, body) => {
+      if (err) { this.log.debug?.('status error', String(err)); return; }
+      try { cb(JSON.parse(body ?? '{}') as RobotStatus); } catch { /* ignore parse */ }
+    });
+  }
+
+  private request(method: 'GET'|'POST', port: number, path: string, data: any,
+    cb: (err?: Error|null, body?: string)=>void) {
+    const payload = data ? Buffer.from(JSON.stringify(data)) : undefined;
+    const req = http.request(
+      { host: '127.0.0.1', port, path, method,
+        headers: payload ? { 'content-type': 'application/json', 'content-length': String(payload.length) } : undefined,
+        timeout: 8000 },
+      (res) => {
+        let out = '';
+        res.on('data', (c) => { out += c; });
+        res.on('end', () => cb(null, out));
+      });
+    req.on('error', (e) => cb(e as Error));
+    if (payload) req.write(payload);
+    req.end();
   }
 }
