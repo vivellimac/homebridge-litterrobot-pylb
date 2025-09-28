@@ -1,18 +1,20 @@
 {
-  "pluginAlias": "ExampleHomebridgePlugin",
+  "pluginAlias": "LitterRobotPylb",
   "pluginType": "platform",
   "singular": true,
-  "strictValidation": false,
   "schema": {
     "type": "object",
-    "required": ["name"],
-    "additionalProperties": false,
     "properties": {
-      "name": {
-        "title": "Name",
-        "type": "string",
-        "default": "Example Dynamic Platform"
-      }
-    }
+      "name": { "type": "string", "default": "Litter-Robot" },
+      "python": { "type": "string", "title": "Python Executable", "default": "/usr/bin/python3" },
+      "workdir": { "type": "string", "default": "" },
+      "username": { "type": "string" },
+      "password": { "type": "string" },
+      "port": { "type": "number", "default": 8765 },
+      "pollInterval": { "type": "number", "default": 5000, "minimum": 3000, "maximum": 60000 },
+      "pulseMs": { "type": "number", "default": 1500, "minimum": 250, "maximum": 10000 },
+      "debug": { "type": "boolean", "default": false }
+    },
+    "required": ["username", "password"]
   }
 }
