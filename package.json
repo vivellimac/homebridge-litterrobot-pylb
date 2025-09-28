@@ -24,7 +24,6 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": ["dist", "README.md", "LICENSE", "package.json", "config.schema.json", "sidecar"],
-  "type": "module",
   "scripts": {
     "build": "rimraf dist && tsc",
     "lint": "eslint . --max-warnings=0",
