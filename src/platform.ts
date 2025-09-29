@@ -143,7 +143,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
 
         this.log.info('[sidecar] Not healthy; invoking bootstrap …');
         try {
-          this.py = spawn(systemPy, [bootstrap, '--workdir', workdir, '--port', String(port), '--logfile', bLog], {
+          this.py = spawn(systemPy, [bootstrap, '--workdir', workdir, '--port', String(port)], {
             stdio: 'ignore',
             env: process.env,
           });
