@@ -102,7 +102,7 @@ class LitterRobotPlatform {
                 return; // do not loop if spawn failed
             }
             // Wait for the newly started sidecar to report healthy
-            return waitForHealth(port, 12000).then((ok2) => {
+            return waitForHealth(port, 120000).then((ok2) => {
                 try {
                     this.tailStop?.();
                 }
