@@ -2,36 +2,50 @@ name: Build & Commit dist
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+      - api-hookup
+      - feature/**
+      - fix/**
+      - hotfix/**
     paths:
       - "src/**"
       - "tsconfig.json"
       - "package.json"
       - ".eslintrc.*"
+    paths-ignore:
+      - "dist/**"         # prevent loops on the bot's dist commit
   pull_request:
-    branches: [ main ]
+    branches:
+      - main
+      - api-hookup
     paths:
       - "src/**"
       - "tsconfig.json"
       - "package.json"
       - ".eslintrc.*"
+  workflow_dispatch: {}    # manual run when needed
 
 permissions:
-  contents: write   # required to push the built dist back
+  contents: write          # required to push dist updates
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # needed to push back to the same branch
+          persist-credentials: true # use GITHUB_TOKEN for the commit
 
       - name: Use Node 20 LTS
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: "npm"
+          cache: npm
 
       - name: Install deps
         run: npm ci
@@ -48,3 +62,4 @@ jobs:
           add: "dist"
           message: "ci: build dist [skip ci]"
           default_author: github_actions
+          push: true
