@@ -13,8 +13,6 @@ on:
       - "tsconfig.json"
       - "package.json"
       - ".eslintrc.*"
-    paths-ignore:
-      - "dist/**"         # prevent loops on the bot's dist commit
   pull_request:
     branches:
       - main
@@ -24,10 +22,10 @@ on:
       - "tsconfig.json"
       - "package.json"
       - ".eslintrc.*"
-  workflow_dispatch: {}    # manual run when needed
+  workflow_dispatch: {}
 
 permissions:
-  contents: write          # required to push dist updates
+  contents: write
 
 jobs:
   build:
@@ -38,8 +36,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0            # needed to push back to the same branch
-          persist-credentials: true # use GITHUB_TOKEN for the commit
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Use Node 20 LTS
         uses: actions/setup-node@v4
