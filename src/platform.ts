@@ -75,7 +75,6 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     }
 
     this.api.on('didFinishLaunching', () => {
-      // start() is sync; all async inside handles errors and rejections
       this.start();
     });
     this.api.on('shutdown', () => this.stop());
@@ -170,7 +169,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     pollInterval: number,
     debug: boolean,
   ): void {
-    this.request('POST', port, '/login', { username, password }, (err, body) => {
+    this.request('POST', port, '/login', (err, body) => {
       if (err) {
         this.log.error(`Login failed: ${errMsg(err)}`);
         return;
@@ -187,7 +186,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       } catch (e) {
         this.log.error(`Login parse error: ${errMsg(e)}`);
       }
-    });
+    }, { username, password });
   }
 
   // ---------- accessories ----------
@@ -202,10 +201,10 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       const sw = newAcc.addService(this.Service.Switch, 'Cycle Now');
       sw.getCharacteristic(this.Characteristic.On).onSet((val) => {
         if (!val) return;
-        this.request('POST', Number(this.config.port ?? 8765), `/cycle/${id}`, {}, (err2) => {
+        this.request('POST', Number(this.config.port ?? 8765), `/cycle/${id}`, (err2) => {
           if (err2) this.log.warn(`Cycle command failed: ${errMsg(err2)}`);
           setTimeout(() => sw.updateCharacteristic(this.Characteristic.On, false), 500);
-        });
+        }, {});
       });
 
       newAcc.addService(this.Service.ContactSensor, 'Bonnet', 'Bonnet');
@@ -276,7 +275,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
           );
         }
 
-        const last = acc.context._last ?? { cycle: false, idle: false, code: null as string | null };
+        const last = acc.context._last ?? { cycle: false, idle: false, code: null };
         if (last.cycle && !st.cycle && st.idle && completedSvc) {
           const ms = Number(acc.context._pulseMs ?? pulseMs);
           completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, true);
@@ -298,10 +297,13 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
   }
 
   private getStatus(id: string, port: number, cb: (s: Status) => void): void {
-    this.request('GET', port, `/status/${id}`, undefined, (err, body) => {
+    this.request('GET', port, `/status/${id}`, (err, body) => {
       if (err) {
-        // homebridge's Logging has .debug? keep conditional safe
-        (this.log as Logging & { debug?: Logging['info'] }).debug?.(`status error ${errMsg(err)}`);
+        // Optional debug logger if available on Homebridge Logging
+        const maybeDebug = (this.log as unknown as { debug?: (...a: unknown[]) => void }).debug;
+        if (typeof maybeDebug === 'function') {
+          maybeDebug(`status error ${errMsg(err)}`);
+        }
         return;
       }
       try {
@@ -334,26 +336,9 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     method: 'GET' | 'POST',
     port: number,
     pathName: string,
-    data: unknown | undefined, // NOTE: declared but made optional in signature below
     cb: (err: Error | null, body?: string) => void,
-  ): void;
-  private request(
-    method: 'GET' | 'POST',
-    port: number,
-    pathName: string,
-    cb: (err: Error | null, body?: string) => void,
-  ): void;
-  private request(
-    method: 'GET' | 'POST',
-    port: number,
-    pathName: string,
-    dataOrCb: unknown | ((err: Error | null, body?: string) => void),
-    maybeCb?: (err: Error | null, body?: string) => void,
+    data?: unknown,
   ): void {
-    const hasData = typeof dataOrCb !== 'function';
-    const data = (hasData ? (dataOrCb as unknown) : undefined) as unknown;
-    const cb = (hasData ? maybeCb : dataOrCb) as (err: Error | null, body?: string) => void;
-
     const payload = data != null ? Buffer.from(JSON.stringify(data)) : undefined;
 
     const options: http.RequestOptions = {
@@ -391,8 +376,11 @@ function clampNumber(n: number, min: number, max: number): number {
 async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
+    // eslint rule no-await-in-loop not disabled; only two awaits and both are fine
+    // eslint-disable-next-line no-await-in-loop
     const ok = await pingHealth(port).catch(() => false);
     if (ok) return true;
+    // eslint-disable-next-line no-await-in-loop
     await delay(300);
   }
   return false;
