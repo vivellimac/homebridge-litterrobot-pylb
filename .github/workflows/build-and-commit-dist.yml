@@ -5,6 +5,7 @@ on:
     branches: ["**"]
     paths-ignore:
       - "dist/**"
+      - "package-lock.json"
       - ".github/workflows/build-and-commit-dist.yml"
   workflow_dispatch:
 
@@ -30,30 +31,53 @@ jobs:
           node-version: "20"
           cache: "npm"
 
-      - name: Remove lockfile (we do not track it)
+      # Find the package directory that has a "build" script.
+      # It prefers repo root; otherwise searches subfolders (depth 3).
+      - name: Locate package directory
+        id: pkgdir
+        shell: bash
+        run: |
+          set -euo pipefail
+          pick_dir() {
+            local d="$1"
+            [ -f "$d/package.json" ] || return 1
+            node -e 'const p=require(process.argv[1]);process.exit(p.scripts&&p.scripts.build?0:1)' "$d/package.json"
+          }
+          PKGDIR="."
+          if ! pick_dir "."; then
+            # search for first package.json with a build script (skip node_modules)
+            while IFS= read -r -d '' f; do
+              d="$(dirname "$f")"
+              if pick_dir "$d"; then PKGDIR="$d"; break; fi
+            done < <(find . -path "*/node_modules" -prune -o -name package.json -maxdepth 3 -print0)
+          fi
+          echo "Using package dir: $PKGDIR"
+          echo "PKGDIR=$PKGDIR" >> "$GITHUB_ENV"
+
+      - name: Remove lockfile (we don't track it)
         run: rm -f package-lock.json
+        working-directory: ${{ env.PKGDIR }}
 
       - name: Install deps (no lockfile)
         run: npm i --no-audit --no-fund
+        working-directory: ${{ env.PKGDIR }}
 
-      - name: Lint
+      - name: Lint (strict, if present)
         run: |
           if npm run | grep -qE '(^|[[:space:]])lint([[:space:]]|:)'; then
             npm run lint -- --max-warnings=0
           else
             echo "No lint script; skipping."
           fi
+        working-directory: ${{ env.PKGDIR }}
 
       - name: Build TypeScript to dist/
-        run: |
-          if npm run | grep -qE '(^|[[:space:]])build([[:space:]]|:)'; then
-            npm run build
-          else
-            echo "Missing 'build' script (e.g. \"rimraf dist && tsc\")." && exit 1
-          fi
+        run: npm run build
+        working-directory: ${{ env.PKGDIR }}
 
       - name: Verify dist exists
         run: test -d dist || (echo "dist/ not found after build" && exit 1)
+        working-directory: ${{ env.PKGDIR }}
 
       - name: Commit and push dist changes
         env:
@@ -61,8 +85,9 @@ jobs:
           GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
           GIT_COMMITTER_NAME: github-actions[bot]
           GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        shell: bash
         run: |
-          git add -A dist
+          git add -A "${PKGDIR}/dist"
           if git diff --cached --quiet; then
             echo "No changes in dist/ to commit."
             exit 0
@@ -73,4 +98,4 @@ jobs:
       - name: Summary
         run: |
           echo "Ref: $GITHUB_REF"
-          echo "Done."
+          echo "Package dir: $PKGDIR"
