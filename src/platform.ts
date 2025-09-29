@@ -107,15 +107,24 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       return;
     }
 
-    // Determine Python executable for first run (bootstrap will create venv if missing)
-    const venvPy = path.join(workdir, '.venv', 'bin', 'python');
-    const pyExec = fs.existsSync(venvPy) ? venvPy : String(this.config.python ?? 'python3');
+    // Always use system Python to run bootstrap; let bootstrap manage/repair the venv.
+    const systemPy = String(this.config.python ?? 'python3');
+
+    // Paths for logs only (we no longer spawn the venv python directly here)
+    const venvDir = path.join(workdir, '.venv');
+    const venvPy = path.join(venvDir, 'bin', 'python');
 
     // Sidecar bootstrap path (within our installed package)
     const pluginDir = path.resolve(this.api.user.storagePath(), 'node_modules', PLUGIN_NAME);
     const bootstrap = path.join(pluginDir, 'sidecar', 'bootstrap.py');
 
-    // Block until healthy (bootstrap will be spawned if not healthy)
+    if (debug) {
+      this.log.info(
+        `Sidecar: workdir=${workdir} port=${port} bootstrap=${bootstrap} systemPy=${systemPy} venvPy=${venvPy}`,
+      );
+    }
+
+    // Check current health. If not healthy, run bootstrap via system Python.
     waitForHealth(port, 4_000)
       .then((healthy) => {
         if (healthy) {
@@ -124,22 +133,30 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
           return;
         }
 
-        // Not healthy yet → try to spawn bootstrap once
+        this.log.info('Sidecar not healthy; invoking bootstrap...');
         try {
-          this.py = spawn(pyExec, [bootstrap, '--workdir', workdir, '--port', String(port)], {
+          this.py = spawn(systemPy, [bootstrap, '--workdir', workdir, '--port', String(port)], {
             stdio: 'ignore',
             env: process.env,
           });
         } catch (e) {
-          this.log.error(`Failed to spawn sidecar: ${errMsg(e)}`);
+          this.log.error(
+            `Failed to spawn bootstrap with ${systemPy}: ${errMsg(e)} ` +
+              `(hint: ensure ${systemPy} exists and is executable)`,
+          );
+          return; // do not loop if spawn failed
         }
 
-        this.log.info('Waiting for sidecar health...');
+        // Wait for the newly started sidecar to report healthy
         return waitForHealth(port, 12_000).then((ok2) => {
           if (!ok2) {
-            this.log.error('Sidecar failed to start.');
+            this.log.error('Sidecar failed to start after bootstrap.');
             return;
           }
+          // Optional sanity: venv presence for diagnostics only
+          const venvOk = fs.existsSync(venvPy);
+          if (debug) this.log.info(`Sidecar venv python present: ${venvOk ? 'yes' : 'no'}`);
+
           this.log.info(`Sidecar healthy at http://127.0.0.1:${port}`);
           this.loginAndBegin(username, password, port, pulseMs, pollInterval, debug);
         });
@@ -299,7 +316,6 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
   private getStatus(id: string, port: number, cb: (s: Status) => void): void {
     this.request('GET', port, `/status/${id}`, (err, body) => {
       if (err) {
-        // Optional debug logger if available on Homebridge Logging
         const maybeDebug = (this.log as unknown as { debug?: (...a: unknown[]) => void }).debug;
         if (typeof maybeDebug === 'function') {
           maybeDebug(`status error ${errMsg(err)}`);
@@ -375,14 +391,17 @@ function clampNumber(n: number, min: number, max: number): number {
 
 async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> {
   const started = Date.now();
+  let tries = 0;
   while (Date.now() - started < timeoutMs) {
+    // eslint-disable-next-line no-await-in-loop
     const ok = await pingHealth(port).catch(() => false);
     if (ok) return true;
+    tries += 1;
+    // eslint-disable-next-line no-await-in-loop
     await delay(300);
   }
   return false;
 }
-
 
 function pingHealth(port: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
