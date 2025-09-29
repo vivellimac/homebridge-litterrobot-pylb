@@ -5,9 +5,6 @@
 !/dist/
 !/dist/**
 
-# Ignore compiled code elsewhere
-build/Release
-
 # Lockfile (avoid churn for git-install flow)
 package-lock.json
 
@@ -41,14 +38,17 @@ coverage
 # nyc test coverage
 .nyc_output
 
-# Grunt intermediate storage (https://gruntjs.com/creating-plugins#storing-task-files)
+# Grunt intermediate storage
 .grunt
 
-# Bower dependency directory (https://bower.io/)
+# Bower dependency directory
 bower_components
 
 # node-waf configuration
 .lock-wscript
+
+# Compiled binary addons
+build/Release
 
 # Dependency directories
 node_modules/
@@ -83,7 +83,7 @@ web_modules/
 .env
 .env.test
 
-# parcel-bundler cache (https://parceljs.org/)
+# parcel-bundler cache
 .cache
 .parcel-cache
 
