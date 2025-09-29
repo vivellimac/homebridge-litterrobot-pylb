@@ -1,26 +1,19 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import http from 'node:http';
-import path from 'node:path';
-import fs from 'node:fs';
+import { PlatformAccessory, API, Logging, PlatformConfig, Service, Characteristic, HAP, DynamicPlatformPlugin } from 'homebridge';
 
-import type {
-  API,
-  DynamicPlatformPlugin,
-  Logger,
-  PlatformAccessory,
-  PlatformConfig,
-  Service,
-  Characteristic,
-} from 'homebridge';
-
+import { PLUGIN_NAME, PLATFORM_NAME } from './settings';
 import { initRootLogger } from './log';
-import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 
-interface RobotStatus {
+/* Node core imports (order matters for eslint import/order) */
+import * as fs from 'node:fs';
+import * as http from 'node:http';
+import * as path from 'node:path';
+import { spawn, ChildProcess } from 'node:child_process';
+
+type Status = {
   id: string;
   name: string;
-  status_code?: string | null;    // raw code from sidecar (string or null)
-  status_label?: string | null;   // human-readable label from sidecar
+  status_code: string | null;
+  status_label: string | null;
   cycle: boolean;
   idle: boolean;
   pinch: boolean;
@@ -28,34 +21,28 @@ interface RobotStatus {
   home: boolean;
   paused: boolean;
   offline: boolean;
-}
-
-interface LastState {
-  cycle: boolean;
-  idle: boolean;
-  code: string | null;
-}
+};
 
 export class LitterRobotPlatform implements DynamicPlatformPlugin {
-  public Service!: typeof Service;
-  public Characteristic!: typeof Characteristic;
+  private readonly hap: HAP;
+  public readonly Service: typeof Service;
+  public readonly Characteristic: typeof Characteristic;
 
   private readonly accessories = new Map<string, PlatformAccessory>();
-  private py: ChildProcess | null = null;
   private poll?: NodeJS.Timeout;
+  private py: ChildProcess | null = null;
 
   constructor(
-    private readonly log: Logger,
-    private readonly config: PlatformConfig,
-    private readonly api: API,
+    public readonly log: Logging,
+    public readonly config: PlatformConfig,
+    public readonly api: API,
   ) {
     initRootLogger(log);
+    this.hap = api.hap;
+    this.Service = api.hap.Service;
+    this.Characteristic = api.hap.Characteristic;
 
-    // Initialize HAP types AFTER 'api' is available
-    this.Service = this.api.hap.Service;
-    this.Characteristic = this.api.hap.Characteristic;
-
-    if (!this.config) {
+    if (!config) {
       this.log.warn('No config block provided; skipping initialization.');
       return;
     }
@@ -69,70 +56,75 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
   }
 
   // ---------- lifecycle ----------
-
-  private start() {
-    // Clamp / read config
+  private start(): void {
     const port = Number(this.config.port ?? 8765);
     const workdir = String(this.config.workdir ?? path.join(this.api.user.storagePath(), 'lr-sidecar'));
     const debug = Boolean(this.config.debug);
-    const pulseMs = Math.max(250, Math.min(10_000, Number(this.config.pulseMs ?? 1500)));
-    const pollInterval = Math.max(3000, Math.min(60_000, Number(this.config.pollInterval ?? 5000)));
-
+    const pulseMs = clampNumber(Number(this.config.pulseMs ?? 1500), 250, 10_000);
+    const pollInterval = clampNumber(Number(this.config.pollInterval ?? 5000), 3000, 60_000);
     const username = String(this.config.username ?? '');
     const password = String(this.config.password ?? '');
+
     if (!username || !password) {
       this.log.warn('Missing username/password in config — plugin idle.');
       return;
     }
 
     // Ensure workdir exists
-    fs.mkdirSync(workdir, { recursive: true });
+    try {
+      fs.mkdirSync(workdir, { recursive: true });
+    } catch (e) {
+      this.log.error(`Failed to create workdir ${workdir}: ${errMsg(e)}`);
+      return;
+    }
 
-    // Resolve bootstrap from the installed package (avoid guessing under storagePath)
-    const bootstrap = path.resolve(__dirname, '..', 'sidecar', 'bootstrap.py');
-
-    // Prefer a previously-created venv inside workdir, else user override, else system default
+    // Determine Python executable for first run (bootstrap will create venv if missing)
     const venvPy = path.join(workdir, '.venv', 'bin', 'python');
     const pyExec = fs.existsSync(venvPy)
       ? venvPy
       : String(this.config.python ?? 'python3');
 
-    // 1) See if a sidecar is already up
-    this.checkHealthOnce(port, (healthy) => {
+    // Sidecar bootstrap path (within our installed package)
+    const pluginDir = path.resolve(
+      this.api.user.storagePath(),
+      'node_modules',
+      PLUGIN_NAME,
+    );
+    const bootstrap = path.join(pluginDir, 'sidecar', 'bootstrap.py');
+
+    // Block until healthy (bootstrap will be spawned if not healthy)
+    waitForHealth(port, 4_000).then((healthy) => {
       if (healthy) {
         this.log.info(`Sidecar healthy at http://127.0.0.1:${port}`);
-        this.doLoginAndStartPolling({ port, username, password, pulseMs, pollInterval, debug });
+        this.loginAndBegin(username, password, port, pulseMs, pollInterval, debug);
         return;
       }
 
-      // 2) Not healthy — spawn bootstrap to set up venv + run uvicorn
+      // Not healthy yet → try to spawn bootstrap once
       try {
         this.py = spawn(pyExec, [bootstrap, '--workdir', workdir, '--port', String(port)], {
           stdio: 'ignore',
-        });
-
-        this.py.on('exit', (code, signal) => {
-          this.log.warn(`Sidecar exited (code=${code ?? 'n/a'} signal=${signal ?? 'n/a'})`);
+          env: process.env,
         });
       } catch (e) {
-        this.log.error('Failed to spawn sidecar:', (e as Error).message);
-        // Bail early; without sidecar nothing else works
-        return;
+        this.log.error(`Failed to spawn sidecar: ${errMsg(e)}`);
       }
 
-      // 3) Wait for /health to come up, then proceed to login
-      this.waitForHealth(port, 20, 750, (ok) => {
-        if (!ok) {
-          this.log.error('Sidecar did not become healthy in time.');
+      this.log.info('Waiting for sidecar health...');
+      waitForHealth(port, 12_000).then((ok2) => {
+        if (!ok2) {
+          this.log.error('Sidecar failed to start.');
           return;
         }
         this.log.info(`Sidecar healthy at http://127.0.0.1:${port}`);
-        this.doLoginAndStartPolling({ port, username, password, pulseMs, pollInterval, debug });
+        this.loginAndBegin(username, password, port, pulseMs, pollInterval, debug);
       });
+    }).catch((e) => {
+      this.log.error(`Health check error: ${errMsg(e)}`);
     });
   }
 
-  private stop() {
+  private stop(): void {
     if (this.poll) {
       clearInterval(this.poll);
       this.poll = undefined;
@@ -143,155 +135,85 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     }
   }
 
-  // ---------- bootstrap / health ----------
-
-  private checkHealthOnce(port: number, cb: (ok: boolean) => void) {
-    const req = http.request(
-      {
-        host: '127.0.0.1',
-        port,
-        path: '/health',
-        method: 'GET',
-        timeout: 2000,
-      },
-      (res) => {
-        let out = '';
-        res.on('data', (c: Buffer) => (out += c.toString('utf8')));
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(out || '{}');
-            cb(Boolean(parsed.ok));
-          } catch {
-            cb(false);
-          }
-        });
-      },
-    );
-    req.on('error', () => cb(false));
-    req.end();
-  }
-
-  private waitForHealth(
+  // ---------- after healthy ----------
+  private loginAndBegin(
+    username: string,
+    password: string,
     port: number,
-    attempts: number,
-    intervalMs: number,
-    cb: (ok: boolean) => void,
-  ) {
-    let remaining = attempts;
-    const tick = () => {
-      this.checkHealthOnce(port, (ok) => {
-        if (ok) {
-          cb(true);
-          return;
-        }
-        remaining -= 1;
-        if (remaining <= 0) {
-          cb(false);
-          return;
-        }
-        setTimeout(tick, intervalMs);
-      });
-    };
-    tick();
-  }
-
-  private doLoginAndStartPolling(opts: {
-    port: number;
-    username: string;
-    password: string;
-    pulseMs: number;
-    pollInterval: number;
-    debug: boolean;
-  }) {
-    const { port, username, password, pulseMs, pollInterval, debug } = opts;
-
+    pulseMs: number,
+    pollInterval: number,
+    debug: boolean,
+  ): void {
     this.request('POST', port, '/login', { username, password }, (err, body) => {
       if (err) {
-        this.log.error('Login failed:', err.message);
+        this.log.error(`Login failed: ${errMsg(err)}`);
         return;
       }
       try {
         const parsed = JSON.parse(body ?? '{}') as { robots?: unknown };
-        const ids: string[] = Array.isArray(parsed.robots)
-          ? (parsed.robots as unknown[]).filter((x): x is string => typeof x === 'string')
+        const ids = Array.isArray(parsed.robots)
+          ? parsed.robots.filter((x): x is string => typeof x === 'string')
           : [];
-
         ids.forEach((id) => this.upsertRobot(id, pulseMs));
 
-        if (this.poll) {
-          clearInterval(this.poll);
-        }
+        if (this.poll) clearInterval(this.poll);
         this.poll = setInterval(() => this.pollOnce(port, debug, pulseMs), pollInterval);
       } catch (e) {
-        this.log.error('Login parse error', String(e));
+        this.log.error(`Login parse error: ${errMsg(e)}`);
       }
     });
   }
 
   // ---------- accessories ----------
-
-  private upsertRobot(id: string, pulseMs: number) {
-    const uuid = this.api.hap.uuid.generate(id);
+  private upsertRobot(id: string, pulseMs: number): void {
+    const uuid = this.hap.uuid.generate(id);
     let acc = this.accessories.get(uuid);
 
     if (!acc) {
       acc = new this.api.platformAccessory(`Litter-Robot ${id.slice(-4)}`, uuid);
       acc.context.robotId = id;
 
-      // Controls
       const sw = acc.addService(this.Service.Switch, 'Cycle Now');
       sw.getCharacteristic(this.Characteristic.On).onSet((val) => {
         if (!val) return;
-        this.request('POST', Number(this.config.port ?? 8765), `/cycle/${id}`, {}, (err) => {
-          if (err) {
-            this.log.warn('Cycle command failed:', String(err));
-          }
-          setTimeout(() => {
-            sw.updateCharacteristic(this.Characteristic.On, false);
-          }, 500);
+        this.request('POST', Number(this.config.port ?? 8765), `/cycle/${id}`, {}, (err2) => {
+          if (err2) this.log.warn(`Cycle command failed: ${errMsg(err2)}`);
+          setTimeout(() => sw.updateCharacteristic(this.Characteristic.On, false), 500);
         });
       });
 
-      // Simple state sensors (fixed subtypes for stable lookups)
       acc.addService(this.Service.ContactSensor, 'Bonnet', 'Bonnet');
       acc.addService(this.Service.ContactSensor, 'Pinch', 'Pinch');
       acc.addService(this.Service.OccupancySensor, 'Offline', 'Offline');
-
-      // Automation-friendly sensors
       acc.addService(this.Service.MotionSensor, 'Cycle Completed', 'CycleCompleted');
       acc.addService(this.Service.ContactSensor, 'Cycle Fault', 'CycleFault');
 
-      // Track last state & pulse duration for transition pulses
-      acc.context._last = { cycle: false, idle: false, code: null as string | null } as LastState;
-      acc.context._pulseMs = pulseMs;
+      (acc.context as any)._last = { cycle: false, idle: false, code: null as string | null };
+      (acc.context as any)._pulseMs = pulseMs;
 
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [acc]);
       this.accessories.set(uuid, acc);
     }
   }
 
-  // ---------- polling / mapping ----------
-
-  private pollOnce(port: number, debug: boolean, pulseMs: number) {
+  // ---------- polling ----------
+  private pollOnce(port: number, debug: boolean, pulseMs: number): void {
     for (const acc of this.accessories.values()) {
-      const id = String(acc.context.robotId ?? '');
+      const id = String((acc.context as any).robotId ?? '');
       if (!id) continue;
 
       this.getStatus(id, port, (st) => {
-        // Reflect switch
         const switchSvc = acc.getService(this.Service.Switch);
         if (switchSvc) {
           switchSvc.updateCharacteristic(this.Characteristic.On, st.cycle);
         }
 
-        // Convenience lookups by subtype
         const bonnetSvc = acc.getServiceById(this.Service.ContactSensor, 'Bonnet');
         const pinchSvc = acc.getServiceById(this.Service.ContactSensor, 'Pinch');
         const offlineSvc = acc.getServiceById(this.Service.OccupancySensor, 'Offline');
         const completedSvc = acc.getServiceById(this.Service.MotionSensor, 'CycleCompleted');
         const faultSvc = acc.getServiceById(this.Service.ContactSensor, 'CycleFault');
 
-        // Basic sensors
         if (bonnetSvc) {
           bonnetSvc.updateCharacteristic(
             this.Characteristic.ContactSensorState,
@@ -300,7 +222,6 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
               : this.Characteristic.ContactSensorState.CONTACT_DETECTED,
           );
         }
-
         if (pinchSvc) {
           pinchSvc.updateCharacteristic(
             this.Characteristic.ContactSensorState,
@@ -309,7 +230,6 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
               : this.Characteristic.ContactSensorState.CONTACT_DETECTED,
           );
         }
-
         if (offlineSvc) {
           offlineSvc.updateCharacteristic(
             this.Characteristic.OccupancyDetected,
@@ -319,7 +239,6 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
           );
         }
 
-        // Fault (OPEN on any fault-ish condition)
         const isFault = Boolean(st.pinch || st.bonnet || st.paused || st.offline);
         if (faultSvc) {
           faultSvc.updateCharacteristic(
@@ -330,97 +249,126 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
           );
         }
 
-        // Completed pulse by state transition (cycle -> false && idle -> true)
-        const last = (acc.context._last ?? { cycle: false, idle: false, code: null }) as LastState;
-        if (last.cycle && !st.cycle && st.idle) {
-          const ms = Number(acc.context._pulseMs ?? pulseMs);
-          if (completedSvc) {
-            completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, true);
-            setTimeout(() => {
-              completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, false);
-            }, ms);
-          }
+        const last = ((acc.context as any)._last ?? { cycle: false, idle: false, code: null as string | null });
+        if (last.cycle && !st.cycle && st.idle && completedSvc) {
+          const ms = Number((acc.context as any)._pulseMs ?? pulseMs);
+          completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, true);
+          setTimeout(() => completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, false), ms);
         }
 
-        // Capture raw status_code for future transitions
-        const code = st.status_code ?? null;
-        const label = st.status_label ?? null;
-        acc.context._last = { cycle: st.cycle, idle: st.idle, code };
+        (acc.context as any)._last = { cycle: st.cycle, idle: st.idle, code: st.status_code };
 
-        // Heartbeat (single concise line)
         if (debug) {
+          const code = st.status_code ?? 'n/a';
+          const label = st.status_label ? `(${st.status_label})` : '';
           this.log.info(
-            `status: code=${code ?? 'n/a'}${label ? `(${label})` : ''} ` +
-              `cycle=${st.cycle} idle=${st.idle} pinch=${st.pinch} bonnet=${st.bonnet} ` +
-              `home=${st.home} paused=${st.paused} offline=${st.offline}`,
+            `status: code=${code}${label} cycle=${st.cycle} idle=${st.idle} pinch=${st.pinch} ` +
+            `bonnet=${st.bonnet} home=${st.home} paused=${st.paused} offline=${st.offline}`,
           );
         }
       });
     }
   }
 
-  private getStatus(id: string, port: number, cb: (s: RobotStatus) => void) {
+  private getStatus(id: string, port: number, cb: (s: Status) => void): void {
     this.request('GET', port, `/status/${id}`, undefined, (err, body) => {
       if (err) {
-        this.log.debug?.('status error', String(err));
+        if (this.log.debug) this.log.debug(`status error ${errMsg(err)}`);
         return;
       }
       try {
-        const parsed = JSON.parse(body ?? '{}') as Partial<RobotStatus>;
-        if (typeof parsed.id !== 'string') return;
+        const p = JSON.parse(body ?? '{}') as Partial<Status> & { id?: unknown };
+        if (typeof p.id !== 'string') return;
 
-        // Fill required booleans with safe defaults if missing
-        const s: RobotStatus = {
-          id: parsed.id,
-          name: typeof parsed.name === 'string' ? parsed.name : parsed.id,
-          status_code: parsed.status_code ?? null,
-          status_label: parsed.status_label ?? null,
-          cycle: Boolean(parsed.cycle),
-          idle: Boolean(parsed.idle),
-          pinch: Boolean(parsed.pinch),
-          bonnet: Boolean(parsed.bonnet),
-          home: Boolean(parsed.home),
-          paused: Boolean(parsed.paused),
-          offline: Boolean(parsed.offline),
+        const s: Status = {
+          id: p.id,
+          name: typeof p.name === 'string' ? p.name : p.id,
+          status_code: (p as any).status_code ?? null,
+          status_label: (p as any).status_label ?? null,
+          cycle: Boolean((p as any).cycle),
+          idle: Boolean((p as any).idle),
+          pinch: Boolean((p as any).pinch),
+          bonnet: Boolean((p as any).bonnet),
+          home: Boolean((p as any).home),
+          paused: Boolean((p as any).paused),
+          offline: Boolean((p as any).offline),
         };
         cb(s);
       } catch {
-        // ignore parse errors silently to avoid log spam
+        // swallow parse errors to avoid log spam
       }
     });
   }
 
   // ---------- http helper ----------
-
   private request(
     method: 'GET' | 'POST',
     port: number,
     pathName: string,
-    data: unknown,
-    cb: (err?: Error | null, body?: string) => void,
-  ) {
+    data: unknown | undefined,
+    cb: (err: Error | null, body?: string) => void,
+  ): void {
     const payload = data != null ? Buffer.from(JSON.stringify(data)) : undefined;
-    const req = http.request(
-      {
-        host: '127.0.0.1',
-        port,
-        path: pathName,
-        method,
-        headers: payload
-          ? { 'content-type': 'application/json', 'content-length': String(payload.length) }
-          : undefined,
-        timeout: 8000,
-      },
-      (res) => {
-        let out = '';
-        res.on('data', (c: Buffer) => {
-          out += c.toString('utf8');
-        });
-        res.on('end', () => cb(null, out));
-      },
-    );
+
+    const options: http.RequestOptions = {
+      host: '127.0.0.1',
+      port,
+      path: pathName,
+      method,
+      headers: payload
+        ? { 'content-type': 'application/json', 'content-length': String(payload.length) }
+        : undefined,
+      timeout: 8000,
+    };
+
+    const req: http.ClientRequest = http.request(options, (res: http.IncomingMessage) => {
+      let out = '';
+      res.on('data', (c: Buffer | string) => { out += c.toString(); });
+      res.on('end', () => cb(null, out));
+    });
+
     req.on('error', (e: Error) => cb(e));
     if (payload) req.write(payload);
     req.end();
   }
+}
+
+/* ---------- small helpers ---------- */
+
+function clampNumber(n: number, min: number, max: number): number {
+  if (Number.isNaN(n)) return min;
+  return Math.max(min, Math.min(max, n));
+}
+
+async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const ok = await pingHealth(port).catch(() => false);
+    if (ok) return true;
+    await delay(300);
+  }
+  return false;
+}
+
+function pingHealth(port: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const req = http.request(
+      { host: '127.0.0.1', port, path: '/health', method: 'GET', timeout: 2000 },
+      (res) => {
+        const ok = res.statusCode === 200;
+        res.resume(); // drain
+        resolve(ok);
+      },
+    );
+    req.on('error', () => resolve(false));
+    req.end();
+  });
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
