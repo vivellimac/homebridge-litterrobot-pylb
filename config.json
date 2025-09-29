@@ -1,12 +1,6 @@
 {
   "platform": "LitterRobotPylb",
   "name": "Litter-Robot",
-  "python": "/usr/bin/python3",
-  "workdir": "/var/lib/homebridge/lr-sidecar",
   "username": "YOUR_EMAIL",
-  "password": "YOUR_PASSWORD",
-  "port": 8765,
-  "pollInterval": 5000,
-  "pulseMs": 1500,
-  "debug": true
+  "password": "YOUR_PASSWORD"
 }
