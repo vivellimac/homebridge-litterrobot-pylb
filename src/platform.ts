@@ -1,6 +1,7 @@
 /* Node core (must come first for eslint import/order)  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as fsp from 'node:fs/promises';
 import * as http from 'node:http';
 import * as path from 'node:path';
 
@@ -58,6 +59,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
   private readonly accessories = new Map<string, PlatformAccessory<AccessoryContext>>();
   private poll?: NodeJS.Timeout;
   private py: ChildProcess | null = null;
+  private tailStop?: () => void;
 
   constructor(
     public readonly log: Logging,
@@ -117,51 +119,63 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     // Sidecar bootstrap path (within our installed package)
     const pluginDir = path.resolve(this.api.user.storagePath(), 'node_modules', PLUGIN_NAME);
     const bootstrap = path.join(pluginDir, 'sidecar', 'bootstrap.py');
+    const bLog = path.join(workdir, 'bootstrap.log');
 
     if (debug) {
       this.log.info(
-        `Sidecar: workdir=${workdir} port=${port} bootstrap=${bootstrap} systemPy=${systemPy} venvPy=${venvPy}`,
+        `[sidecar] workdir=${workdir} port=${port} bootstrap=${bootstrap} systemPy=${systemPy} venvPy=${venvPy}`,
       );
     }
 
     // Check current health. If not healthy, run bootstrap via system Python.
+    // While waiting, tail the bootstrap progress log.
+    this.log.info('[sidecar] Waiting for /health ...');
+    this.tailStop = tailBootstrapLog(bLog, (line) => this.log.info(`[sidecar] ${line}`));
+
     waitForHealth(port, 4_000)
       .then((healthy) => {
         if (healthy) {
+          try { this.tailStop?.(); } catch { /* ignore */ }
           this.log.info(`Sidecar healthy at http://127.0.0.1:${port}`);
           this.loginAndBegin(username, password, port, pulseMs, pollInterval, debug);
           return;
         }
 
-        this.log.info('Sidecar not healthy; invoking bootstrap...');
+        this.log.info('[sidecar] Not healthy; invoking bootstrap …');
         try {
           this.py = spawn(systemPy, [bootstrap, '--workdir', workdir, '--port', String(port)], {
             stdio: 'ignore',
             env: process.env,
+          });
+          this.py.on('exit', (code, signal) => {
+            this.log.warn(`Sidecar exited (code=${code ?? 'n/a'} signal=${signal ?? 'n/a'})`);
           });
         } catch (e) {
           this.log.error(
             `Failed to spawn bootstrap with ${systemPy}: ${errMsg(e)} ` +
               `(hint: ensure ${systemPy} exists and is executable)`,
           );
+          try { this.tailStop?.(); } catch { /* ignore */ }
           return; // do not loop if spawn failed
         }
 
         // Wait for the newly started sidecar to report healthy
         return waitForHealth(port, 12_000).then((ok2) => {
+          try { this.tailStop?.(); } catch { /* ignore */ }
           if (!ok2) {
             this.log.error('Sidecar failed to start after bootstrap.');
             return;
           }
           // Optional sanity: venv presence for diagnostics only
           const venvOk = fs.existsSync(venvPy);
-          if (debug) this.log.info(`Sidecar venv python present: ${venvOk ? 'yes' : 'no'}`);
+          if (debug) this.log.info(`[sidecar] venv python present: ${venvOk ? 'yes' : 'no'}`);
 
           this.log.info(`Sidecar healthy at http://127.0.0.1:${port}`);
           this.loginAndBegin(username, password, port, pulseMs, pollInterval, debug);
         });
       })
       .catch((e) => {
+        try { this.tailStop?.(); } catch { /* ignore */ }
         this.log.error(`Health check error: ${errMsg(e)}`);
       });
   }
@@ -171,6 +185,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       clearInterval(this.poll);
       this.poll = undefined;
     }
+    try { this.tailStop?.(); } catch { /* ignore */ }
     if (this.py) {
       this.py.kill();
       this.py = null;
@@ -399,7 +414,6 @@ async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> 
   return false;
 }
 
-
 function pingHealth(port: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const req = http.request(
@@ -413,6 +427,50 @@ function pingHealth(port: number): Promise<boolean> {
     req.on('error', () => resolve(false));
     req.end();
   });
+}
+
+function tailBootstrapLog(file: string, sink: (line: string) => void): () => void {
+  let stopped = false;
+  let position = 0;
+  let watcher: fs.FSWatcher | null = null;
+
+  const readNew = async (): Promise<void> => {
+    try {
+      const h = await fsp.open(file, 'r');
+      const stat = await h.stat();
+      if (stat.size > position) {
+        const buf = Buffer.alloc(stat.size - position);
+        await h.read(buf, 0, buf.length, position);
+        position = stat.size;
+        const lines = buf.toString('utf8').split(/\r?\n/).filter(Boolean);
+        for (const ln of lines) sink(ln);
+      }
+      await h.close();
+    } catch {
+      // file may not exist yet; ignore
+    }
+  };
+
+  // initial read & poll fallback
+  void readNew();
+  const timer = setInterval(() => { if (!stopped) void readNew(); }, 1000);
+
+  try {
+    watcher = fs.watch(path.dirname(file), (evt, fname) => {
+      if (stopped) return;
+      if (!fname) return;
+      const full = path.join(path.dirname(file), fname);
+      if (full === file) void readNew();
+    });
+  } catch {
+    // fs.watch may fail on some fs; polling will cover us
+  }
+
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+    try { watcher?.close(); } catch { /* ignore */ }
+  };
 }
 
 function delay(ms: number): Promise<void> {
