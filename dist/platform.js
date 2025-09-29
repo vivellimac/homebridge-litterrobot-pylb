@@ -84,7 +84,7 @@ class LitterRobotPlatform {
             }
             this.log.info('[sidecar] Not healthy; invoking bootstrap …');
             try {
-                this.py = (0, node_child_process_1.spawn)(systemPy, [bootstrap, '--workdir', workdir, '--port', String(port), '--logfile', bLog], {
+                this.py = (0, node_child_process_1.spawn)(systemPy, [bootstrap, '--workdir', workdir, '--port', String(port)], {
                     stdio: 'ignore',
                     env: process.env,
                 });
