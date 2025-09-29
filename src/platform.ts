@@ -1,8 +1,8 @@
 /* Node core (must come first for eslint import/order) */
+import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
 
 /* External */
 import {
@@ -17,8 +17,8 @@ import {
 } from 'homebridge';
 
 /* Internal */
-import { PLUGIN_NAME, PLATFORM_NAME } from './settings';
 import { initRootLogger } from './log';
+import { PLUGIN_NAME, PLATFORM_NAME } from './settings';
 
 /* ---------- types ---------- */
 
@@ -334,9 +334,26 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     method: 'GET' | 'POST',
     port: number,
     pathName: string,
-    data: unknown | undefined,
+    data: unknown | undefined, // NOTE: declared but made optional in signature below
     cb: (err: Error | null, body?: string) => void,
+  ): void;
+  private request(
+    method: 'GET' | 'POST',
+    port: number,
+    pathName: string,
+    cb: (err: Error | null, body?: string) => void,
+  ): void;
+  private request(
+    method: 'GET' | 'POST',
+    port: number,
+    pathName: string,
+    dataOrCb: unknown | ((err: Error | null, body?: string) => void),
+    maybeCb?: (err: Error | null, body?: string) => void,
   ): void {
+    const hasData = typeof dataOrCb !== 'function';
+    const data = (hasData ? (dataOrCb as unknown) : undefined) as unknown;
+    const cb = (hasData ? maybeCb : dataOrCb) as (err: Error | null, body?: string) => void;
+
     const payload = data != null ? Buffer.from(JSON.stringify(data)) : undefined;
 
     const options: http.RequestOptions = {
@@ -374,11 +391,8 @@ function clampNumber(n: number, min: number, max: number): number {
 async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    // wrapped in await chain with catch in caller
-    // eslint-disable-next-line no-await-in-loop
     const ok = await pingHealth(port).catch(() => false);
     if (ok) return true;
-    // eslint-disable-next-line no-await-in-loop
     await delay(300);
   }
   return false;
