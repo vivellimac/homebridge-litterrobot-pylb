@@ -1,5 +1,15 @@
-# Ignore compiled code
-dist
+# --- Build artifacts ---
+# Ignore dist everywhere...
+**/dist/
+# ...but DO track the top-level dist for this plugin (CI commits prebuilt code)
+!/dist/
+!/dist/**
+
+# Ignore compiled code elsewhere
+build/Release
+
+# Lockfile (avoid churn for git-install flow)
+package-lock.json
 
 # ------------- Defaults ------------- #
 .DS_Store
@@ -40,14 +50,9 @@ bower_components
 # node-waf configuration
 .lock-wscript
 
-# Compiled binary addons (https://nodejs.org/api/addons.html)
-build/Release
-
 # Dependency directories
 node_modules/
 jspm_packages/
-
-# Snowpack dependency directory (https://snowpack.dev/)
 web_modules/
 
 # TypeScript cache
@@ -82,20 +87,9 @@ web_modules/
 .cache
 .parcel-cache
 
-# Next.js build output
+# Next.js / Nuxt.js / VuePress build output
 .next
-
-# Nuxt.js build / generate output
 .nuxt
-dist
-
-# Gatsby files
-.cache/
-# Comment in the public line in if your project uses Gatsby and not Next.js
-# https://nextjs.org/blog/next-9-1#public-directory-support
-# public
-
-# vuepress build output
 .vuepress/dist
 
 # Serverless directories
@@ -114,7 +108,6 @@ dist
 .vscode-test
 
 # yarn v2
-
 .yarn/cache
 .yarn/unplugged
 .yarn/build-state.yml
@@ -123,6 +116,7 @@ dist
 # Webstorm
 .idea
 
+# Tests / local artifacts
 /test/hbConfig
 sidecar/__pycache__/
 *.bak
