@@ -160,7 +160,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
         }
 
         // Wait for the newly started sidecar to report healthy
-        return waitForHealth(port, 12_000).then((ok2) => {
+        return waitForHealth(port, 120_000).then((ok2) => {
           try { this.tailStop?.(); } catch { /* ignore */ }
           if (!ok2) {
             this.log.error('Sidecar failed to start after bootstrap.');
