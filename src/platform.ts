@@ -1,4 +1,4 @@
-/* Node core (must come first for eslint import/order) */
+/* Node core (must come first for eslint import/order)  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
