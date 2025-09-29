@@ -1,13 +1,38 @@
-import { PlatformAccessory, API, Logging, PlatformConfig, Service, Characteristic, HAP, DynamicPlatformPlugin } from 'homebridge';
-
-import { PLUGIN_NAME, PLATFORM_NAME } from './settings';
-import { initRootLogger } from './log';
-
-/* Node core imports (order matters for eslint import/order) */
+/* Node core (must come first for eslint import/order) */
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
-import { spawn, ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
+
+/* External */
+import {
+  PlatformAccessory,
+  API,
+  Logging,
+  PlatformConfig,
+  Service,
+  Characteristic,
+  HAP,
+  DynamicPlatformPlugin,
+} from 'homebridge';
+
+/* Internal */
+import { PLUGIN_NAME, PLATFORM_NAME } from './settings';
+import { initRootLogger } from './log';
+
+/* ---------- types ---------- */
+
+type LastSnapshot = {
+  cycle: boolean;
+  idle: boolean;
+  code: string | null;
+};
+
+type AccessoryContext = {
+  robotId: string;
+  _last: LastSnapshot;
+  _pulseMs: number;
+};
 
 type Status = {
   id: string;
@@ -23,12 +48,14 @@ type Status = {
   offline: boolean;
 };
 
+/* ---------- platform ---------- */
+
 export class LitterRobotPlatform implements DynamicPlatformPlugin {
   private readonly hap: HAP;
   public readonly Service: typeof Service;
   public readonly Characteristic: typeof Characteristic;
 
-  private readonly accessories = new Map<string, PlatformAccessory>();
+  private readonly accessories = new Map<string, PlatformAccessory<AccessoryContext>>();
   private poll?: NodeJS.Timeout;
   private py: ChildProcess | null = null;
 
@@ -47,11 +74,14 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       return;
     }
 
-    this.api.on('didFinishLaunching', () => this.start());
+    this.api.on('didFinishLaunching', () => {
+      // start() is sync; all async inside handles errors and rejections
+      this.start();
+    });
     this.api.on('shutdown', () => this.stop());
   }
 
-  configureAccessory(acc: PlatformAccessory) {
+  configureAccessory(acc: PlatformAccessory<AccessoryContext>) {
     this.accessories.set(acc.UUID, acc);
   }
 
@@ -80,48 +110,44 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
 
     // Determine Python executable for first run (bootstrap will create venv if missing)
     const venvPy = path.join(workdir, '.venv', 'bin', 'python');
-    const pyExec = fs.existsSync(venvPy)
-      ? venvPy
-      : String(this.config.python ?? 'python3');
+    const pyExec = fs.existsSync(venvPy) ? venvPy : String(this.config.python ?? 'python3');
 
     // Sidecar bootstrap path (within our installed package)
-    const pluginDir = path.resolve(
-      this.api.user.storagePath(),
-      'node_modules',
-      PLUGIN_NAME,
-    );
+    const pluginDir = path.resolve(this.api.user.storagePath(), 'node_modules', PLUGIN_NAME);
     const bootstrap = path.join(pluginDir, 'sidecar', 'bootstrap.py');
 
     // Block until healthy (bootstrap will be spawned if not healthy)
-    waitForHealth(port, 4_000).then((healthy) => {
-      if (healthy) {
-        this.log.info(`Sidecar healthy at http://127.0.0.1:${port}`);
-        this.loginAndBegin(username, password, port, pulseMs, pollInterval, debug);
-        return;
-      }
-
-      // Not healthy yet → try to spawn bootstrap once
-      try {
-        this.py = spawn(pyExec, [bootstrap, '--workdir', workdir, '--port', String(port)], {
-          stdio: 'ignore',
-          env: process.env,
-        });
-      } catch (e) {
-        this.log.error(`Failed to spawn sidecar: ${errMsg(e)}`);
-      }
-
-      this.log.info('Waiting for sidecar health...');
-      waitForHealth(port, 12_000).then((ok2) => {
-        if (!ok2) {
-          this.log.error('Sidecar failed to start.');
+    waitForHealth(port, 4_000)
+      .then((healthy) => {
+        if (healthy) {
+          this.log.info(`Sidecar healthy at http://127.0.0.1:${port}`);
+          this.loginAndBegin(username, password, port, pulseMs, pollInterval, debug);
           return;
         }
-        this.log.info(`Sidecar healthy at http://127.0.0.1:${port}`);
-        this.loginAndBegin(username, password, port, pulseMs, pollInterval, debug);
+
+        // Not healthy yet → try to spawn bootstrap once
+        try {
+          this.py = spawn(pyExec, [bootstrap, '--workdir', workdir, '--port', String(port)], {
+            stdio: 'ignore',
+            env: process.env,
+          });
+        } catch (e) {
+          this.log.error(`Failed to spawn sidecar: ${errMsg(e)}`);
+        }
+
+        this.log.info('Waiting for sidecar health...');
+        return waitForHealth(port, 12_000).then((ok2) => {
+          if (!ok2) {
+            this.log.error('Sidecar failed to start.');
+            return;
+          }
+          this.log.info(`Sidecar healthy at http://127.0.0.1:${port}`);
+          this.loginAndBegin(username, password, port, pulseMs, pollInterval, debug);
+        });
+      })
+      .catch((e) => {
+        this.log.error(`Health check error: ${errMsg(e)}`);
       });
-    }).catch((e) => {
-      this.log.error(`Health check error: ${errMsg(e)}`);
-    });
   }
 
   private stop(): void {
@@ -170,10 +196,10 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     let acc = this.accessories.get(uuid);
 
     if (!acc) {
-      acc = new this.api.platformAccessory(`Litter-Robot ${id.slice(-4)}`, uuid);
-      acc.context.robotId = id;
+      const newAcc = new this.api.platformAccessory<AccessoryContext>(`Litter-Robot ${id.slice(-4)}`, uuid);
+      newAcc.context.robotId = id;
 
-      const sw = acc.addService(this.Service.Switch, 'Cycle Now');
+      const sw = newAcc.addService(this.Service.Switch, 'Cycle Now');
       sw.getCharacteristic(this.Characteristic.On).onSet((val) => {
         if (!val) return;
         this.request('POST', Number(this.config.port ?? 8765), `/cycle/${id}`, {}, (err2) => {
@@ -182,24 +208,25 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
         });
       });
 
-      acc.addService(this.Service.ContactSensor, 'Bonnet', 'Bonnet');
-      acc.addService(this.Service.ContactSensor, 'Pinch', 'Pinch');
-      acc.addService(this.Service.OccupancySensor, 'Offline', 'Offline');
-      acc.addService(this.Service.MotionSensor, 'Cycle Completed', 'CycleCompleted');
-      acc.addService(this.Service.ContactSensor, 'Cycle Fault', 'CycleFault');
+      newAcc.addService(this.Service.ContactSensor, 'Bonnet', 'Bonnet');
+      newAcc.addService(this.Service.ContactSensor, 'Pinch', 'Pinch');
+      newAcc.addService(this.Service.OccupancySensor, 'Offline', 'Offline');
+      newAcc.addService(this.Service.MotionSensor, 'Cycle Completed', 'CycleCompleted');
+      newAcc.addService(this.Service.ContactSensor, 'Cycle Fault', 'CycleFault');
 
-      (acc.context as any)._last = { cycle: false, idle: false, code: null as string | null };
-      (acc.context as any)._pulseMs = pulseMs;
+      newAcc.context._last = { cycle: false, idle: false, code: null };
+      newAcc.context._pulseMs = pulseMs;
 
-      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [acc]);
-      this.accessories.set(uuid, acc);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [newAcc]);
+      this.accessories.set(uuid, newAcc);
+      acc = newAcc;
     }
   }
 
   // ---------- polling ----------
   private pollOnce(port: number, debug: boolean, pulseMs: number): void {
     for (const acc of this.accessories.values()) {
-      const id = String((acc.context as any).robotId ?? '');
+      const id = String(acc.context.robotId ?? '');
       if (!id) continue;
 
       this.getStatus(id, port, (st) => {
@@ -249,21 +276,21 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
           );
         }
 
-        const last = ((acc.context as any)._last ?? { cycle: false, idle: false, code: null as string | null });
+        const last = acc.context._last ?? { cycle: false, idle: false, code: null as string | null };
         if (last.cycle && !st.cycle && st.idle && completedSvc) {
-          const ms = Number((acc.context as any)._pulseMs ?? pulseMs);
+          const ms = Number(acc.context._pulseMs ?? pulseMs);
           completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, true);
           setTimeout(() => completedSvc.updateCharacteristic(this.Characteristic.MotionDetected, false), ms);
         }
 
-        (acc.context as any)._last = { cycle: st.cycle, idle: st.idle, code: st.status_code };
+        acc.context._last = { cycle: st.cycle, idle: st.idle, code: st.status_code };
 
         if (debug) {
           const code = st.status_code ?? 'n/a';
           const label = st.status_label ? `(${st.status_label})` : '';
           this.log.info(
             `status: code=${code}${label} cycle=${st.cycle} idle=${st.idle} pinch=${st.pinch} ` +
-            `bonnet=${st.bonnet} home=${st.home} paused=${st.paused} offline=${st.offline}`,
+              `bonnet=${st.bonnet} home=${st.home} paused=${st.paused} offline=${st.offline}`,
           );
         }
       });
@@ -273,25 +300,27 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
   private getStatus(id: string, port: number, cb: (s: Status) => void): void {
     this.request('GET', port, `/status/${id}`, undefined, (err, body) => {
       if (err) {
-        if (this.log.debug) this.log.debug(`status error ${errMsg(err)}`);
+        // homebridge's Logging has .debug? keep conditional safe
+        (this.log as Logging & { debug?: Logging['info'] }).debug?.(`status error ${errMsg(err)}`);
         return;
       }
       try {
         const p = JSON.parse(body ?? '{}') as Partial<Status> & { id?: unknown };
+
         if (typeof p.id !== 'string') return;
 
         const s: Status = {
           id: p.id,
           name: typeof p.name === 'string' ? p.name : p.id,
-          status_code: (p as any).status_code ?? null,
-          status_label: (p as any).status_label ?? null,
-          cycle: Boolean((p as any).cycle),
-          idle: Boolean((p as any).idle),
-          pinch: Boolean((p as any).pinch),
-          bonnet: Boolean((p as any).bonnet),
-          home: Boolean((p as any).home),
-          paused: Boolean((p as any).paused),
-          offline: Boolean((p as any).offline),
+          status_code: typeof p.status_code === 'string' || p.status_code === null ? p.status_code : null,
+          status_label: typeof p.status_label === 'string' || p.status_label === null ? p.status_label : null,
+          cycle: Boolean(p.cycle),
+          idle: Boolean(p.idle),
+          pinch: Boolean(p.pinch),
+          bonnet: Boolean(p.bonnet),
+          home: Boolean(p.home),
+          paused: Boolean(p.paused),
+          offline: Boolean(p.offline),
         };
         cb(s);
       } catch {
@@ -323,7 +352,9 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
 
     const req: http.ClientRequest = http.request(options, (res: http.IncomingMessage) => {
       let out = '';
-      res.on('data', (c: Buffer | string) => { out += c.toString(); });
+      res.on('data', (c: Buffer | string) => {
+        out += c.toString();
+      });
       res.on('end', () => cb(null, out));
     });
 
@@ -343,8 +374,11 @@ function clampNumber(n: number, min: number, max: number): number {
 async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
+    // wrapped in await chain with catch in caller
+    // eslint-disable-next-line no-await-in-loop
     const ok = await pingHealth(port).catch(() => false);
     if (ok) return true;
+    // eslint-disable-next-line no-await-in-loop
     await delay(300);
   }
   return false;
