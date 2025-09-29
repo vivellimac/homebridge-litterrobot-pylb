@@ -28,109 +28,116 @@ class LitterRobotPlatform {
     this.accessories.set(acc.UUID, acc);
   }
   // ---------- lifecycle ----------
-  start() {
-    const port = Number(this.config.port ?? 8765);
-    const workdir = String(this.config.workdir ?? (0, node_path_1.join)(this.api.user.storagePath(), 'lr-sidecar'));
-    const pyExec = String(this.config.python ?? '/usr/bin/python3');
-    const debug = Boolean(this.config.debug);
-    const pulseMs = Math.max(250, Math.min(10000, Number(this.config.pulseMs ?? 1500)));
-    const pollInterval = Math.max(3000, Math.min(60000, Number(this.config.pollInterval ?? 5000)));
-    const username = String(this.config.username ?? '');
-    const password = String(this.config.password ?? '');
-    if (!username || !password) {
-      this.log.warn('Missing username/password in config — plugin idle.');
-      return;
-    }
+  // ---------- lifecycle ----------
+start() {
+  const port = Number(this.config.port ?? 8765);
+  const workdir = String(this.config.workdir ?? (0, node_path_1.join)(this.api.user.storagePath(), 'lr-sidecar'));
+  const systemPy = String(this.config.python ?? 'python3'); // system python, not the venv
+  const debug = Boolean(this.config.debug);
+  const pulseMs = Math.max(250, Math.min(10000, Number(this.config.pulseMs ?? 1500)));
+  const pollInterval = Math.max(3000, Math.min(60000, Number(this.config.pollInterval ?? 5000)));
+
+  const username = String(this.config.username ?? '');
+  const password = String(this.config.password ?? '');
+  if (!username || !password) {
+    this.log.warn('Missing username/password in config — plugin idle.');
+    return;
+  }
+
+  try {
     (0, node_fs_1.mkdirSync)(workdir, { recursive: true });
-    const pluginDir = (0, node_path_1.join)(this.api.user.storagePath(), 'node_modules', settings_1.PLUGIN_NAME);
-    const bootstrap = (0, node_path_1.join)(pluginDir, 'sidecar', 'bootstrap.py');
+  } catch (_) { /* ignore */ }
 
-    // launch sidecar
-    try {
-      this.py = (0, node_child_process_1.spawn)(pyExec, [bootstrap, '--workdir', workdir, '--port', String(port)], { stdio: 'ignore' });
-      this.py.on('exit', (code, signal) => {
-        this.log.warn(`Sidecar exited (code=${code ?? 'n/a'} signal=${signal ?? 'n/a'})`);
-      });
-    } catch (e) {
-      this.log.error('Failed to spawn sidecar:', String(e));
-    }
+  // Resolve bootstrap.py from the installed package
+  const pluginDir = (0, node_path_1.join)(this.api.user.storagePath(), 'node_modules', settings_1.PLUGIN_NAME);
+  const bootstrap = (0, node_path_1.join)(pluginDir, 'sidecar', 'bootstrap.py');
 
-    // --- helpers: wait for /health, then login with retry/backoff
-    const waitForHealthOnce = (giveUpMs = 60000) => new Promise((resolve) => {
-      const t0 = Date.now();
-      const tryOnce = () => {
-        this.request('GET', port, '/health', undefined, (err, body) => {
-          let ok = false;
-          if (!err) {
-            try { ok = !!JSON.parse(body ?? '{}').ok; } catch { ok = false; }
+  // helper: probe sidecar health quickly
+  const checkHealthOnce = (ok, fail) => {
+    const req = (0, node_http_1.request)(
+      { host: '127.0.0.1', port, path: '/health', method: 'GET', timeout: 2500 },
+      (res) => {
+        let out = '';
+        res.on('data', (c) => (out += c.toString('utf8')));
+        res.on('end', () => {
+          if (res.statusCode === 200) {
+            if (debug) this.log.info(`[Litter-Robot] Sidecar healthy at http://127.0.0.1:${port}`);
+            ok();
+          } else {
+            fail(new Error(`health http ${res.statusCode}`));
           }
-          if (ok) {
-            if (debug) this.log.info(`Sidecar healthy at http://127.0.0.1:${port}`);
-            return resolve(true);
-          }
-          if (Date.now() - t0 > giveUpMs) {
-            return resolve(false);
-          }
-          setTimeout(tryOnce, 1000);
         });
-      };
-      tryOnce();
+      }
+    );
+    req.on('error', fail);
+    req.end();
+  };
+
+  const waitForHealth = (tries, done) => {
+    let remaining = tries;
+    const tick = () => {
+      checkHealthOnce(
+        () => done(true),
+        () => {
+          if (--remaining <= 0) return done(false);
+          setTimeout(tick, 1000);
+        }
+      );
+    };
+    tick();
+  };
+
+  // sequence:
+  // 1) if health OK -> login
+  // 2) else spawn bootstrap with system python, then wait for health -> login
+  const afterHealthy = () => {
+    this.request('POST', port, '/login', { username, password }, (err, body) => {
+      if (err) {
+        this.log.error('Login failed:', err.message);
+        return;
+      }
+      try {
+        const parsed = JSON.parse(body ?? '{}');
+        const ids = Array.isArray(parsed.robots)
+          ? parsed.robots.filter((x) => typeof x === 'string')
+          : [];
+        ids.forEach((id) => this.upsertRobot(id, pulseMs));
+
+        if (this.poll) clearInterval(this.poll);
+        this.poll = setInterval(() => this.pollOnce(port, debug, pulseMs), pollInterval);
+      } catch (e) {
+        this.log.error('Login parse error', String(e));
+      }
     });
+  };
 
-    const loginWithRetry = () => {
-      const startTs = Date.now();
-      const attempt = (delayMs) => setTimeout(() => {
-        this.request('POST', port, '/login', { username, password }, (err, body) => {
-          if (err) {
-            if (Date.now() - startTs < 30000) {
-              if (debug) this.log.info(`Login retry after error: ${err.message}`);
-              return attempt(1500);
-            }
-            this.log.error('Login failed:', err.message);
-            return;
-          }
-          try {
-            const parsed = JSON.parse(body ?? '{}');
-            const ids = Array.isArray(parsed.robots) ? parsed.robots.filter((x) => typeof x === 'string') : [];
-            ids.forEach((id) => this.upsertRobot(id, pulseMs));
-            if (this.poll) clearInterval(this.poll);
-            this.poll = setInterval(() => this.pollOnce(port, debug, pulseMs), pollInterval);
-          } catch (e) {
-            this.log.error('Login parse error', String(e));
-          }
-        });
-      }, delayMs);
-      attempt(0);
-    };
-
-    const waitLoop = async () => {
-      // initial wait up to 60s
-      const ok = await waitForHealthOnce(60000);
-      if (!ok) {
-        this.log.warn(`Sidecar not ready yet at http://127.0.0.1:${port}; will keep waiting...`);
-      }
-      // keep waiting every 5s until healthy
-      while (!(await waitForHealthOnce(2500))) {
-        await new Promise(r => setTimeout(r, 5000));
-      }
-      // got healthy -> login (with its own connection retry)
-      loginWithRetry();
-    };
-
-    if (debug) this.log.info('Waiting for sidecar health...');
-    void waitLoop();
-  }
-
-  stop() {
-    if (this.poll) {
-      clearInterval(this.poll);
-      this.poll = undefined;
+  const spawnBootstrap = () => {
+    try {
+      const args = [bootstrap, '--workdir', workdir, '--port', String(port)];
+      this.py = (0, node_child_process_1.spawn)(systemPy, args, { stdio: 'ignore' });
+    } catch (e) {
+      this.log.error('Failed to spawn sidecar:', e);
     }
-    if (this.py) {
-      try { this.py.kill(); } catch { /* ignore */ }
-      this.py = null;
+  };
+
+  // Run the sequence
+  checkHealthOnce(
+    // Already healthy
+    afterHealthy,
+    // Not healthy yet: start bootstrap then wait for health
+    () => {
+      this.log.info('[Litter-Robot] Waiting for sidecar health...');
+      spawnBootstrap();
+      waitForHealth(30, (ok) => {
+        if (!ok) {
+          this.log.error('Sidecar failed to start (health timeout)');
+          return;
+        }
+        afterHealthy();
+      });
     }
-  }
+  );
+}
 
   // ---------- accessories ----------
   upsertRobot(id, pulseMs) {
