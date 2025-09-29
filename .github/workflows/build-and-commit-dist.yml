@@ -2,21 +2,14 @@ name: Build & Commit dist
 
 on:
   push:
-    branches:
-      - main
-      - api-hookup
-      - feature/**
-      - fix/**
-      - hotfix/**
+    branches: [ main, api-hookup, feature/**, fix/**, hotfix/** ]
     paths:
       - "src/**"
       - "tsconfig.json"
       - "package.json"
       - ".eslintrc.*"
   pull_request:
-    branches:
-      - main
-      - api-hookup
+    branches: [ main, api-hookup ]
     paths:
       - "src/**"
       - "tsconfig.json"
@@ -31,7 +24,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,8 +37,9 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Install deps
-        run: npm ci
+      - name: Install deps (ci or fallback)
+        run: |
+          npm ci || npm install
 
       - name: Lint (no warnings)
         run: npm run lint --max-warnings=0
