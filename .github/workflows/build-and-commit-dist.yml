@@ -2,66 +2,39 @@ name: Build & Commit dist
 
 on:
   push:
-    branches: [ main, api-hookup, feature/**, fix/**, hotfix/** ]
+    branches: [ main ]
     paths:
       - "src/**"
       - "tsconfig.json"
       - "package.json"
       - ".eslintrc.*"
   pull_request:
-    branches: [ main, api-hookup ]
+    branches: [ main ]
     paths:
       - "src/**"
       - "tsconfig.json"
       - "package.json"
       - ".eslintrc.*"
-  workflow_dispatch: {}
 
 permissions:
-  contents: write
-
-concurrency:
-  group: build-dist-${{ github.ref }}
-  cancel-in-progress: true
+  contents: write   # required to push the built dist back
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
-
+    timeout-minutes: 10
     steps:
-      - name: Checkout (full history on the correct ref)
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.ref }}            # be on the actual branch tip
-          persist-credentials: true
-
-      - name: Determine branch name
-        id: branch
-        run: |
-          BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-          echo "Building branch: $BRANCH"
-
-      - name: Sync local branch (rebase)
-        run: |
-          set -euo pipefail
-          git config pull.rebase true
-          git fetch origin "${{ steps.branch.outputs.branch }}"
-          git checkout "${{ steps.branch.outputs.branch }}"
-          git pull --rebase origin "${{ steps.branch.outputs.branch }}"
-          echo "HEAD after rebase:"
-          git log -1 --oneline
 
       - name: Use Node 20 LTS
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
+          cache: "npm"
 
-      - name: Install deps (ci or fallback)
-        run: npm ci || npm install
+      - name: Install deps
+        run: npm ci
 
       - name: Lint (no warnings)
         run: npm run lint --max-warnings=0
@@ -69,47 +42,9 @@ jobs:
       - name: Type-check & build
         run: npm run build
 
-      - name: Commit dist (only on branch pushes)
-        if: github.event_name == 'push'
-        run: |
-          set -euo pipefail
-          git config user.name  "github-actions"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # Force-add dist even if ignored
-          git add -f dist
-
-          if git diff --cached --quiet; then
-            echo "No changes in dist; skipping commit/push."
-            exit 0
-          fi
-
-          git commit -m "ci: build dist [skip ci]"
-
-          # Rebase again (in case tip moved) and retry push to avoid non-FF
-          for i in 1 2 3 4 5; do
-            echo "Push attempt #$i"
-            git fetch origin "${{ steps.branch.outputs.branch }}"
-            git pull --rebase origin "${{ steps.branch.outputs.branch }}" || true
-            if git push origin HEAD:"${{ steps.branch.outputs.branch }}"; then
-              echo "Push succeeded."
-              exit 0
-            fi
-            echo "Push failed, retrying in 3s..."
-            sleep 3
-          done
-
-          echo "ERROR: Failed to push after multiple retries."
-          exit 1
-
-      # Helpful for debugging when it fails
-      - name: Show status (debug)
-        if: failure()
-        run: |
-          git status
-          echo
-          echo "Local HEAD:"
-          git log -3 --oneline
-          echo
-          echo "Remote tip:"
-          git ls-remote --heads origin "${{ steps.branch.outputs.branch }}"
+      - name: Commit dist if changed
+        uses: EndBug/add-and-commit@v9
+        with:
+          add: "dist"
+          message: "ci: build dist [skip ci]"
+          default_author: github_actions
