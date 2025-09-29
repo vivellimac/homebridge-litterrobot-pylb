@@ -391,17 +391,14 @@ function clampNumber(n: number, min: number, max: number): number {
 
 async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> {
   const started = Date.now();
-  let tries = 0;
   while (Date.now() - started < timeoutMs) {
-    // eslint-disable-next-line no-await-in-loop
     const ok = await pingHealth(port).catch(() => false);
     if (ok) return true;
-    tries += 1;
-    // eslint-disable-next-line no-await-in-loop
     await delay(300);
   }
   return false;
 }
+
 
 function pingHealth(port: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
