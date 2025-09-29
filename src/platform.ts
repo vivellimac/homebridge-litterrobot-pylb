@@ -159,11 +159,11 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
           return; // do not loop if spawn failed
         }
 
-        // Wait for the newly started sidecar to report healthy
-        return waitForHealth(port, 120_000).then((ok2) => {
+        // Wait adaptively: keep waiting while bootstrap.log shows activity (up to 15 min)
+        return waitForHealthAdaptive(port, bLog, 45_000, 900_000).then((ok2) => {
           try { this.tailStop?.(); } catch { /* ignore */ }
           if (!ok2) {
-            this.log.error('Sidecar failed to start after bootstrap.');
+            this.log.error('Sidecar failed to start after bootstrap (no health and no recent bootstrap activity).');
             return;
           }
           // Optional sanity: venv presence for diagnostics only
@@ -399,6 +399,47 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
 
 /* ---------- small helpers ---------- */
 
+async function waitForHealthAdaptive(
+  port: number,
+  logFile: string,
+  idleGraceMs = 45_000,   // how long to tolerate no new log lines
+  maxTotalMs = 900_000,   // absolute cap (15 min)
+): Promise<boolean> {
+  const started = Date.now();
+  let lastActivity = started;
+  let lastSize = -1;
+
+  while (Date.now() - started < maxTotalMs) {
+    // Success path first
+    const ok = await pingHealth(port).catch(() => false);
+    if (ok) return true;
+
+    // Track activity in bootstrap.log (if present)
+    try {
+      const stat = await fsp.stat(logFile);
+      const size = stat.size;
+      if (size !== lastSize) {
+        lastSize = size;
+        lastActivity = Date.now();
+      } else if (Date.now() - stat.mtimeMs < 2_000) {
+        // mtime changed recently; count as activity
+        lastActivity = Date.now();
+      }
+    } catch {
+      /* file may not exist yet */
+    }
+
+    // If idle beyond grace after the first minute, give up
+    if ((Date.now() - started) > 60_000 && (Date.now() - lastActivity) > idleGraceMs) {
+      return false;
+    }
+
+    await delay(500);
+  }
+
+  return false;
+}
+
 function clampNumber(n: number, min: number, max: number): number {
   if (Number.isNaN(n)) return min;
   return Math.max(min, Math.min(max, n));
@@ -456,7 +497,7 @@ function tailBootstrapLog(file: string, sink: (line: string) => void): () => voi
   const timer = setInterval(() => { if (!stopped) void readNew(); }, 1000);
 
   try {
-    watcher = fs.watch(path.dirname(file), (evt, fname) => {
+    watcher = fs.watch(path.dirname(file), (_evt, fname) => {
       if (stopped) return;
       if (!fname) return;
       const full = path.join(path.dirname(file), fname);
