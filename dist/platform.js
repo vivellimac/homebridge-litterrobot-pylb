@@ -101,14 +101,14 @@ class LitterRobotPlatform {
                 catch { /* ignore */ }
                 return; // do not loop if spawn failed
             }
-            // Wait for the newly started sidecar to report healthy
-            return waitForHealth(port, 120000).then((ok2) => {
+            // Wait adaptively: keep waiting while bootstrap.log shows activity (up to 15 min)
+            return waitForHealthAdaptive(port, bLog, 45000, 900000).then((ok2) => {
                 try {
                     this.tailStop?.();
                 }
                 catch { /* ignore */ }
                 if (!ok2) {
-                    this.log.error('Sidecar failed to start after bootstrap.');
+                    this.log.error('Sidecar failed to start after bootstrap (no health and no recent bootstrap activity).');
                     return;
                 }
                 // Optional sanity: venv presence for diagnostics only
@@ -306,6 +306,40 @@ class LitterRobotPlatform {
 }
 exports.LitterRobotPlatform = LitterRobotPlatform;
 /* ---------- small helpers ---------- */
+async function waitForHealthAdaptive(port, logFile, idleGraceMs = 45000, // how long to tolerate no new log lines
+maxTotalMs = 900000) {
+    const started = Date.now();
+    let lastActivity = started;
+    let lastSize = -1;
+    while (Date.now() - started < maxTotalMs) {
+        // Success path first
+        const ok = await pingHealth(port).catch(() => false);
+        if (ok)
+            return true;
+        // Track activity in bootstrap.log (if present)
+        try {
+            const stat = await fsp.stat(logFile);
+            const size = stat.size;
+            if (size !== lastSize) {
+                lastSize = size;
+                lastActivity = Date.now();
+            }
+            else if (Date.now() - stat.mtimeMs < 2000) {
+                // mtime changed recently; count as activity
+                lastActivity = Date.now();
+            }
+        }
+        catch {
+            /* file may not exist yet */
+        }
+        // If idle beyond grace after the first minute, give up
+        if ((Date.now() - started) > 60000 && (Date.now() - lastActivity) > idleGraceMs) {
+            return false;
+        }
+        await delay(500);
+    }
+    return false;
+}
 function clampNumber(n, min, max) {
     if (Number.isNaN(n))
         return min;
@@ -359,7 +393,7 @@ function tailBootstrapLog(file, sink) {
     const timer = setInterval(() => { if (!stopped)
         void readNew(); }, 1000);
     try {
-        watcher = fs.watch(path.dirname(file), (evt, fname) => {
+        watcher = fs.watch(path.dirname(file), (_evt, fname) => {
             if (stopped)
                 return;
             if (!fname)
