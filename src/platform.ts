@@ -19,7 +19,7 @@ import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
 interface RobotStatus {
   id: string;
   name: string;
-  status_code?: string | null;   // e.g. "ccc", "ccp", "csf", ...
+  status_code?: string | null;   // e.g. "ccc", "ccp", "csf", ... 
   status_label?: string | null;  // human-readable label from sidecar
   cycle: boolean;
   idle: boolean;
