@@ -20,32 +20,39 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-dist-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
 
     steps:
       - name: Checkout (full history on the correct ref)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.ref }}            # be on the actual branch, not detached
+          ref: ${{ github.ref }}            # be on the actual branch tip
           persist-credentials: true
 
-      - name: Determine target branch name
+      - name: Determine branch name
         id: branch
         run: |
-          # PRs use GITHUB_HEAD_REF; pushes use GITHUB_REF_NAME
           BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "Building branch: $BRANCH"
 
-      - name: Sync with remote (rebase)
+      - name: Sync local branch (rebase)
         run: |
+          set -euo pipefail
           git config pull.rebase true
           git fetch origin "${{ steps.branch.outputs.branch }}"
           git checkout "${{ steps.branch.outputs.branch }}"
           git pull --rebase origin "${{ steps.branch.outputs.branch }}"
+          echo "HEAD after rebase:"
+          git log -1 --oneline
 
       - name: Use Node 20 LTS
         uses: actions/setup-node@v4
@@ -62,28 +69,47 @@ jobs:
       - name: Type-check & build
         run: npm run build
 
-      # Only commit/push back on branch pushes (never on PRs)
-      - name: Commit dist (if changed)
+      - name: Commit dist (only on branch pushes)
         if: github.event_name == 'push'
         run: |
           set -euo pipefail
           git config user.name  "github-actions"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # force-add dist even if ignored
+          # Force-add dist even if ignored
           git add -f dist
 
-          # no-op if nothing staged
           if git diff --cached --quiet; then
-            echo "No changes in dist; nothing to commit."
+            echo "No changes in dist; skipping commit/push."
             exit 0
           fi
 
           git commit -m "ci: build dist [skip ci]"
 
-          # Rebase again to avoid late race, then push with lease
-          git fetch origin "${{ steps.branch.outputs.branch }}"
-          git pull --rebase origin "${{ steps.branch.outputs.branch }}"
+          # Rebase again (in case tip moved) and retry push to avoid non-FF
+          for i in 1 2 3 4 5; do
+            echo "Push attempt #$i"
+            git fetch origin "${{ steps.branch.outputs.branch }}"
+            git pull --rebase origin "${{ steps.branch.outputs.branch }}" || true
+            if git push origin HEAD:"${{ steps.branch.outputs.branch }}"; then
+              echo "Push succeeded."
+              exit 0
+            fi
+            echo "Push failed, retrying in 3s..."
+            sleep 3
+          done
 
-          # Safe force to handle non-FF only if nothing else changed since fetch
-          git push --force-with-lease origin HEAD:"${{ steps.branch.outputs.branch }}"
+          echo "ERROR: Failed to push after multiple retries."
+          exit 1
+
+      # Helpful for debugging when it fails
+      - name: Show status (debug)
+        if: failure()
+        run: |
+          git status
+          echo
+          echo "Local HEAD:"
+          git log -3 --oneline
+          echo
+          echo "Remote tip:"
+          git ls-remote --heads origin "${{ steps.branch.outputs.branch }}"
