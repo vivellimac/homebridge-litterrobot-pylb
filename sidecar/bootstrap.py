@@ -8,6 +8,7 @@ import sys
 import subprocess
 import venv
 import pathlib
+import time
 from typing import List, Tuple
 
 # Keep requirements lean; the [http] extra produces a warning on piwheels.
@@ -58,26 +59,74 @@ def have_imports(py: str, modules: List[str]) -> bool:
         return False
 
 
+def run_with_heartbeat(
+    cmd: list[str],
+    workdir: str,
+    pct: int,
+    label: str,
+    env: dict[str, str] | None = None,
+    beat_s: float = 10.0,
+) -> None:
+    """
+    Run a subprocess while emitting periodic progress lines so HB never goes quiet.
+    Keeps the percentage fixed at `pct` and appends elapsed seconds.
+    """
+    start = time.time()
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=(env or os.environ),
+        )
+    except Exception as e:
+        log_line(workdir, f"ERROR: failed to spawn: {e}")
+        raise
+
+    last = 0.0
+    # initial beat
+    progress(workdir, pct, f"{label} ... t=0s")
+
+    while proc.poll() is None:
+        now = time.time()
+        if (now - last) >= beat_s:
+            elapsed = int(now - start)
+            progress(workdir, pct, f"{label} ... t={elapsed}s")
+            last = now
+        time.sleep(0.5)
+
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
+
+
 def pip_install(py: str, pkgs: List[str], workdir: str) -> None:
-    """Install packages one-by-one so we can log granular progress."""
+    """Install packages one-by-one so we can log granular progress and heartbeats."""
     env = dict(os.environ)
     env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
     env.setdefault("PYTHONWARNINGS", "ignore")
 
     # Upgrade pip/wheel/setuptools first for faster wheels / better resolver.
-    progress(workdir, 15, "upgrading pip/setuptools/wheel ...")
-    subprocess.check_call(
+    progress(workdir, 15, "working on install")
+    run_with_heartbeat(
         [py, "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"],
+        workdir,
+        15,
+        "working on install",
         env=env,
     )
     progress(workdir, 20, "pip toolchain ready")
 
     total = len(pkgs)
     for idx, pkg in enumerate(pkgs, start=1):
-        pct = 20 + int((idx / max(total, 1)) * 60)  # 20%..80% reserved for installs
-        progress(workdir, max(21, min(pct, 80)), f"installing {pkg} ...")
-        subprocess.check_call(
+        # Spread 20%..80% across packages
+        base_pct = 20 + int((idx / max(total, 1)) * 60) - 1
+        base_pct = max(21, min(base_pct, 79))
+        progress(workdir, base_pct, f"installing {pkg} ...")
+        run_with_heartbeat(
             [py, "-m", "pip", "install", "--no-input", "--disable-pip-version-check", pkg],
+            workdir,
+            base_pct,
+            "working on install",
             env=env,
         )
 
@@ -125,7 +174,7 @@ def main() -> int:
     # Final nudge to indicate we're about to serve
     progress(args.workdir, 90, "launching uvicorn ...")
 
-    import http.client, time
+    import http.client  # local import is fine; avoids earlier os-shadowing issue
 
     APP_PATH = os.environ.get("LR_APP_PATH", "sidecar.app:app")  # set to "api:app" via env if needed
 
@@ -183,8 +232,10 @@ def main() -> int:
         return int(rc or 0)
     else:
         log_line(args.workdir, "ERROR: health check timed out; uvicorn likely failed to start")
-        try: proc.terminate()
-        except Exception: pass
+        try:
+            proc.terminate()
+        except Exception:
+            pass
         return 5
         # os.execvpe replaces the process; we never return.
         # If we ever did, consider that a failure.
