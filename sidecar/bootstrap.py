@@ -153,6 +153,8 @@ def main() -> int:
     # Wait up to 180s for health=200 (first import on Pi can be slow)
     deadline = time.time() + 180
     healthy = False
+    last_beat = 0.0
+    start_wait = time.time()
     while time.time() < deadline and proc.poll() is None:
         try:
             c = http.client.HTTPConnection("127.0.0.1", int(args.port), timeout=1.5)
@@ -164,6 +166,13 @@ def main() -> int:
                 break
         except Exception:
             pass
+        # emit a heartbeat every 10s so HB's tailer sees activity
+        now = time.time()
+        if (now - last_beat) >= 10.0:
+            elapsed = int(now - start_wait)
+            # keep % below 100 until actually healthy
+            progress(args.workdir, 96, f"installing sidecar ... t={elapsed}s")
+            last_beat = now
         time.sleep(0.5)
 
     if healthy:
