@@ -125,7 +125,7 @@ def main() -> int:
     # Final nudge to indicate we're about to serve
     progress(args.workdir, 90, "launching uvicorn ...")
 
-    import http.client, time, subprocess, os
+    import http.client, time
 
     APP_PATH = os.environ.get("LR_APP_PATH", "sidecar.app:app")  # set to "api:app" via env if needed
 
