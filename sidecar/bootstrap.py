@@ -125,28 +125,62 @@ def main() -> int:
     # Final nudge to indicate we're about to serve
     progress(args.workdir, 90, "launching uvicorn ...")
 
-    # Bind and exec (single worker so Account instance is shared)
+    import http.client, time, subprocess, os
+
+    APP_PATH = os.environ.get("LR_APP_PATH", "sidecar.app:app")  # set to "api:app" via env if needed
+
+    # Verify module path importable before spawning
+    try:
+        mod_name, _ = APP_PATH.split(":", 1)
+        __import__(mod_name)
+    except Exception as e:
+        log_line(args.workdir, f"ERROR: cannot import {APP_PATH}: {e}")
+        return 3
+
+    cmd = [
+        py, "-m", "uvicorn", APP_PATH,
+        "--host", "127.0.0.1", "--port", str(args.port),
+        "--workers", "1",
+    ]
+    try:
+        proc = subprocess.Popen(cmd, env=os.environ)
+    except Exception as e:
+        log_line(args.workdir, f"ERROR: failed to spawn uvicorn: {e}")
+        return 4
+
     progress(args.workdir, 95, f"binding 127.0.0.1:{args.port}")
-    os.execvpe(
-        py,
-        [
-            py,
-            "-m",
-            "uvicorn",
-            "sidecar.app:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(args.port),
-            "--workers",
-            "1",
-        ],
-        os.environ,
-    )
-    # os.execvpe replaces the process; we never return.
-    # If we ever did, consider that a failure.
-    # return 1
+
+    # Wait up to 180s for health=200 (first import on Pi can be slow)
+    deadline = time.time() + 180
+    healthy = False
+    while time.time() < deadline and proc.poll() is None:
+        try:
+            c = http.client.HTTPConnection("127.0.0.1", int(args.port), timeout=1.5)
+            c.request("GET", "/health")
+            r = c.getresponse()
+            r.read()
+            if r.status == 200:
+                healthy = True
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+
+    if healthy:
+        progress(args.workdir, 100, "server healthy")
+        rc = proc.wait()
+        if rc:
+            log_line(args.workdir, f"ERROR: uvicorn exited rc={rc}")
+        return int(rc or 0)
+    else:
+        log_line(args.workdir, "ERROR: health check timed out; uvicorn likely failed to start")
+        try: proc.terminate()
+        except Exception: pass
+        return 5
+        # os.execvpe replaces the process; we never return.
+        # If we ever did, consider that a failure.
+        # return 1
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+    if __name__ == "__main__":
+        sys.exit(main())
