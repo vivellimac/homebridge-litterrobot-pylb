@@ -475,20 +475,53 @@ function tailBootstrapLog(file: string, sink: (line: string) => void): () => voi
   let position = 0;
   let watcher: fs.FSWatcher | null = null;
 
+  // prevent overlapping reads (fs.watch + poll can fire together)
+  let inFlight = false;
+  let pending = false;
+
+  // simple de-dup: ignore the same line repeated within 2s
+  let lastLine = '';
+  let lastAt = 0;
+
+  const emit = (ln: string) => {
+    const now = Date.now();
+    if (ln === lastLine && (now - lastAt) < 2000) return;
+    lastLine = ln;
+    lastAt = now;
+    sink(ln);
+  };
+
   const readNew = async (): Promise<void> => {
+    if (stopped) return;
+    if (inFlight) { pending = true; return; }
+    inFlight = true;
     try {
       const h = await fsp.open(file, 'r');
-      const stat = await h.stat();
-      if (stat.size > position) {
-        const buf = Buffer.alloc(stat.size - position);
-        await h.read(buf, 0, buf.length, position);
-        position = stat.size;
-        const lines = buf.toString('utf8').split(/\r?\n/).filter(Boolean);
-        for (const ln of lines) sink(ln);
+      try {
+        const stat = await h.stat();
+        // handle truncation or recreate
+        if (stat.size < position) position = 0;
+
+        if (stat.size > position) {
+          const count = stat.size - position;
+          const buf = Buffer.allocUnsafe(count);
+          await h.read(buf, 0, count, position);
+          position = stat.size;
+
+          const lines = buf.toString('utf8').split(/\r?\n/).filter(Boolean);
+          for (const ln of lines) emit(ln);
+        }
+      } finally {
+        await h.close();
       }
-      await h.close();
     } catch {
       // file may not exist yet; ignore
+    } finally {
+      inFlight = false;
+      if (pending) {
+        pending = false;
+        setTimeout(() => { void readNew(); }, 25);
+      }
     }
   };
 
@@ -504,7 +537,7 @@ function tailBootstrapLog(file: string, sink: (line: string) => void): () => voi
       if (full === file) void readNew();
     });
   } catch {
-    // fs.watch may fail on some fs; polling will cover us
+    // fs.watch may not be available; polling covers us
   }
 
   return () => {
