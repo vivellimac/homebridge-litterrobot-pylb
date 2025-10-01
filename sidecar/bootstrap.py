@@ -178,12 +178,20 @@ def main() -> int:
 
     APP_PATH = os.environ.get("LR_APP_PATH", "sidecar.app:app")  # set to "api:app" via env if needed
 
-    # Verify module path importable before spawning
+    # Verify module path importable using the venv interpreter (not system python)
     try:
         mod_name, _ = APP_PATH.split(":", 1)
-        __import__(mod_name)
+        check_rc = subprocess.run(
+            [py, "-c", f"import os,sys; sys.path.insert(0, {repr(os.environ.get('PYTHONPATH',''))!r}); __import__({mod_name!r})"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=os.environ,
+            check=False,
+        ).returncode
+        if check_rc != 0:
+            raise ImportError(f"venv import failed rc={check_rc}")
     except Exception as e:
-        log_line(args.workdir, f"ERROR: cannot import {APP_PATH}: {e}")
+        log_line(args.workdir, f"ERROR: cannot import {APP_PATH} in venv: {e}")
         return 3
 
     cmd = [
@@ -192,7 +200,11 @@ def main() -> int:
         "--workers", "1",
     ]
     try:
-        proc = subprocess.Popen(cmd, env=os.environ)
+        proc = subprocess.Popen(
+        cmd,
+        env=os.environ,
+        cwd=str(pathlib.Path(__file__).resolve().parent.parent),  # plugin root (contains the 'sidecar' package)
+        )
     except Exception as e:
         log_line(args.workdir, f"ERROR: failed to spawn uvicorn: {e}")
         return 4
