@@ -319,7 +319,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
         this.request('POST', Number(this.config.port ?? 8765), `/lights/${id}`, (err2) => {
           if (err2) {
             this.log.warn(`Light set failed: ${errMsg(err2)}`);
-            setTimeout(() => swLight!.updateCharacteristic(this.Characteristic.On, !desired), 300);
+            setTimeout(() => swLight.updateCharacteristic(this.Characteristic.On, !desired), 300);
           }
         }, { on: desired });
       });
