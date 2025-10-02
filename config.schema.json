@@ -15,8 +15,57 @@
       "port": { "type": "integer", "default": 8765, "title": "Sidecar Port" },
       "pollInterval": { "type": "number", "default": 5000, "minimum": 3000, "maximum": 60000 },
       "pulseMs": { "type": "number", "default": 1500, "minimum": 250, "maximum": 10000 },
-      "debug": { "type": "boolean", "default": false }
+      "debug": {
+        "type": "boolean",
+        "title": "Verbose Status Heartbeat",
+        "default": false
+      },
+      "advanced": {
+        "type": "object",
+        "title": "Advanced",
+        "properties": {
+          "drawerControls": {
+            "type": "boolean",
+            "title": "Enable Drawer Controls (Drawer % sensor + Reset switch)",
+            "default": false
+          },
+          "litterPercent": {
+            "type": "boolean",
+            "title": "Expose Litter % Sensor",
+            "default": false
+          },
+          "interruptTimeoutEnabled": {
+            "type": "boolean",
+            "title": "Enable Cycle-Interrupt Timeout Alert",
+            "default": false
+          },
+          "interruptTimeoutMinutes": {
+            "type": "number",
+            "title": "Cycle-Interrupt Timeout (minutes)",
+            "default": 10,
+            "minimum": 1,
+            "maximum": 120
+          }
+        }
     },
-    "required": ["platform", "name", "username", "password"]
-  }
+    "required": ["username", "password"]
+},
+  "layout": [
+    "username",
+    "password",
+    "port",
+    "workdir",
+    { "key": "debug", "type": "checkbox", "advanced": true },
+    {
+      "key": "advanced",
+      "type": "fieldset",
+      "advanced": true,
+      "items": [
+        "advanced.drawerControls",
+        "advanced.litterPercent",
+        "advanced.interruptTimeoutEnabled",
+        "advanced.interruptTimeoutMinutes"
+      ]
+    }
+  ]
 }
