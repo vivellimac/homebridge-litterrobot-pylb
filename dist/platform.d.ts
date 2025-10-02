@@ -3,11 +3,14 @@ type LastSnapshot = {
     cycle: boolean;
     idle: boolean;
     code: string | null;
+    state?: 'READY' | 'CLEANING' | 'INTERRUPTED' | 'PAUSED' | 'OFFLINE';
 };
 type AccessoryContext = {
     robotId: string;
     _last: LastSnapshot;
     _pulseMs: number;
+    _interruptStartedAt?: number;
+    _interruptTimeoutFired?: boolean;
 };
 export declare class LitterRobotPlatform implements DynamicPlatformPlugin {
     readonly log: Logging;
@@ -20,6 +23,7 @@ export declare class LitterRobotPlatform implements DynamicPlatformPlugin {
     private poll?;
     private py;
     private tailStop?;
+    private adv;
     constructor(log: Logging, config: PlatformConfig, api: API);
     configureAccessory(acc: PlatformAccessory<AccessoryContext>): void;
     private start;
