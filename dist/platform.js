@@ -45,13 +45,10 @@ class LitterRobotPlatform {
         const pollInterval = clampNumber(Number(this.config.pollInterval ?? 5000), 3000, 60000);
         const username = String(this.config.username ?? '');
         const password = String(this.config.password ?? '');
-        // NEW: capture advanced flags (with defaults)
-        this.adv = (this.config.advanced ?? {});
         if (!username || !password) {
             this.log.warn('Missing username/password in config — plugin idle.');
             return;
         }
-        // Ensure workdir exists
         try {
             fs.mkdirSync(workdir, { recursive: true });
         }
@@ -59,33 +56,25 @@ class LitterRobotPlatform {
             this.log.error(`Failed to create workdir ${workdir}: ${errMsg(e)}`);
             return;
         }
-        // Always use system Python to run bootstrap; let bootstrap manage/repair the venv.
         const systemPy = String(this.config.python ?? 'python3');
-        // Paths for logs only (we no longer spawn the venv python directly here)
         const venvDir = path.join(workdir, '.venv');
         const venvPy = path.join(venvDir, 'bin', 'python');
-        // Sidecar bootstrap path (within our installed package)
         const pluginDir = path.resolve(this.api.user.storagePath(), 'node_modules', settings_1.PLUGIN_NAME);
         const bootstrap = path.join(pluginDir, 'sidecar', 'bootstrap.py');
         const bLog = path.join(workdir, 'bootstrap.log');
         if (debug) {
             this.log.info(`[sidecar] workdir=${workdir} port=${port} bootstrap=${bootstrap} systemPy=${systemPy} venvPy=${venvPy}`);
         }
-        // Check current health. If not healthy, run bootstrap via system Python.
-        // While waiting, tail the bootstrap progress log.
+        // First: quick health probe (no tail yet to avoid log spam on warm starts)
         this.log.info('[sidecar] Waiting for /health ...');
-        this.tailStop = tailBootstrapLog(bLog, (line) => this.log.info(`[sidecar] ${line}`));
-        waitForHealth(port, 4000)
-            .then((healthy) => {
-            if (healthy) {
-                try {
-                    this.tailStop?.();
-                }
-                catch { /* ignore */ }
+        waitForHealth(port, 2000).then((healthyFast) => {
+            if (healthyFast) {
                 this.log.info(`Sidecar healthy at http://127.0.0.1:${port}`);
                 this.loginAndBegin(username, password, port, pulseMs, pollInterval, debug);
                 return;
             }
+            // Not healthy: we are about to bootstrap → start tail now
+            this.tailStop = tailBootstrapLog(bLog, (line) => this.log.info(`[sidecar] ${line}`));
             this.log.info('[sidecar] Not healthy; invoking bootstrap …');
             try {
                 this.py = (0, node_child_process_1.spawn)(systemPy, [bootstrap, '--workdir', workdir, '--port', String(port)], {
@@ -97,15 +86,14 @@ class LitterRobotPlatform {
                 });
             }
             catch (e) {
-                this.log.error(`Failed to spawn bootstrap with ${systemPy}: ${errMsg(e)} ` +
-                    `(hint: ensure ${systemPy} exists and is executable)`);
+                this.log.error(`Failed to spawn bootstrap with ${systemPy}: ${errMsg(e)} (hint: ensure ${systemPy} exists)`);
                 try {
                     this.tailStop?.();
                 }
                 catch { /* ignore */ }
-                return; // do not loop if spawn failed
+                return;
             }
-            // Wait adaptively: keep waiting while bootstrap.log shows activity (up to 15 min)
+            // Adaptive wait: keep waiting while bootstrap.log is active (up to 15m)
             return waitForHealthAdaptive(port, bLog, 45000, 900000).then((ok2) => {
                 try {
                     this.tailStop?.();
@@ -115,19 +103,13 @@ class LitterRobotPlatform {
                     this.log.error('Sidecar failed to start after bootstrap (no health and no recent bootstrap activity).');
                     return;
                 }
-                // Optional sanity: venv presence for diagnostics only
                 const venvOk = fs.existsSync(venvPy);
                 if (debug)
                     this.log.info(`[sidecar] venv python present: ${venvOk ? 'yes' : 'no'}`);
                 this.log.info(`Sidecar healthy at http://127.0.0.1:${port}`);
                 this.loginAndBegin(username, password, port, pulseMs, pollInterval, debug);
             });
-        })
-            .catch((e) => {
-            try {
-                this.tailStop?.();
-            }
-            catch { /* ignore */ }
+        }).catch((e) => {
             this.log.error(`Health check error: ${errMsg(e)}`);
         });
     }
