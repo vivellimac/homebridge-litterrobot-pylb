@@ -104,9 +104,24 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
 
   // ---------- lifecycle ----------
   private start(): void {
-    const port = Number(this.config.port ?? 8765);
-    const workdir = String(this.config.workdir ?? path.join(this.api.user.storagePath(), 'lr-sidecar'));
-    const debug = Boolean(this.config.debug);
+    // Read advanced group (nested) with safe fallbacks
+    const advCfg = (this.config as any).advanced ?? {};
+    const ciCfg = advCfg.cycleInterrupt ?? {};
+    const drawerCfg = advCfg.drawer ?? {};
+
+    // Capture advanced toggles for later use (accessory layout, timers)
+    this.adv = {
+      bonnet: Boolean(advCfg.bonnetSensor ?? false),
+      drawerControl: Boolean(drawerCfg.enable ?? false),
+      interruptTimeoutEnabled: Boolean(ciCfg.enabled ?? false),
+      interruptTimeoutMins: Math.max(1, Math.min(120, Number(ciCfg.minutes ?? 5))),
+    };
+
+    // Port/workdir/debug can come from advanced.* or top-level (back-compat)
+    const port = Number(advCfg.port ?? this.config.port ?? 8765);
+    const workdir = String(advCfg.workdir ?? this.config.workdir ?? path.join(this.api.user.storagePath(), 'lr-sidecar'));
+    const debug = Boolean(advCfg.debug ?? this.config.debug ?? false);
+
     const pulseMs = clampNumber(Number(this.config.pulseMs ?? 1500), 250, 10_000);
     const pollInterval = clampNumber(Number(this.config.pollInterval ?? 5000), 3000, 60_000);
     const username = String(this.config.username ?? '');
@@ -226,7 +241,9 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       newAcc.context.robotId = id;
 
       // Controls
-      const swCycle = newAcc.addService(this.Service.Switch, 'Cycle Now');
+      let swCycle = newAcc.getServiceById(this.Service.Switch, 'CycleNow');
+      if (!swCycle) swCycle = newAcc.addService(this.Service.Switch, 'Cycle Now', 'CycleNow');
+
       let swLight = newAcc.getServiceById(this.Service.Switch, 'GlobeLight');
       if (!swLight) swLight = newAcc.addService(this.Service.Switch, 'Globe Light', 'GlobeLight');
 
@@ -283,19 +300,19 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       // Characteristic handlers
       swCycle.getCharacteristic(this.Characteristic.On).onSet((val) => {
         if (!val) return;
-        this.request('POST', Number(this.config.port ?? 8765), `/cycle/${id}`, (err2) => {
+        this.request('POST', Number((this.config as any).advanced?.port ?? this.config.port ?? 8765), `/cycle/${id}`, (err2) => {
           if (err2) this.log.warn(`Cycle command failed: ${errMsg(err2)}`);
-          setTimeout(() => swCycle.updateCharacteristic(this.Characteristic.On, false), 300);
+          setTimeout(() => swCycle!.updateCharacteristic(this.Characteristic.On, false), 300);
         }, {});
       });
 
       // Globe Light switch
       swLight.getCharacteristic(this.Characteristic.On).onSet((val) => {
         const desired = Boolean(val);
-        this.request('POST', Number(this.config.port ?? 8765), `/lights/${id}`, (err2) => {
+        this.request('POST', Number((this.config as any).advanced?.port ?? this.config.port ?? 8765), `/lights/${id}`, (err2) => {
           if (err2) {
             this.log.warn(`Light set failed: ${errMsg(err2)}`);
-            setTimeout(() => swLight.updateCharacteristic(this.Characteristic.On, !desired), 300);
+            setTimeout(() => swLight!.updateCharacteristic(this.Characteristic.On, !desired), 300);
           }
         }, { on: desired });
       });
@@ -304,7 +321,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       if (swReset) {
         swReset.getCharacteristic(this.Characteristic.On).onSet((val) => {
           if (!val) return;
-          this.request('POST', Number(this.config.port ?? 8765), `/reset_drawer/${id}`, (err2) => {
+          this.request('POST', Number((this.config as any).advanced?.port ?? this.config.port ?? 8765), `/reset_drawer/${id}`, (err2) => {
             if (err2) this.log.warn(`Reset drawer failed: ${errMsg(err2)}`);
             setTimeout(() => swReset.updateCharacteristic(this.Characteristic.On, false), 300);
           }, {});
@@ -328,8 +345,8 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       if (!id) continue;
 
       this.getStatus(id, port, (st) => {
-        // Switch reflects current "cycle in progress"
-        const switchSvc = acc.getService(this.Service.Switch);
+        // Switch reflects current "cycle in progress" (specifically CycleNow switch)
+        const switchSvc = acc.getServiceById(this.Service.Switch, 'CycleNow');
         if (switchSvc) {
           switchSvc.updateCharacteristic(this.Characteristic.On, st.cycle);
         }
