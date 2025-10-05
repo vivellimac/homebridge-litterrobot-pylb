@@ -24,6 +24,9 @@ export declare class LitterRobotPlatform implements DynamicPlatformPlugin {
     private py;
     private tailStop?;
     private adv;
+    private runtimePort;
+    private runtimeWorkdir;
+    private runtimeDebug;
     constructor(log: Logging, config: PlatformConfig, api: API);
     configureAccessory(acc: PlatformAccessory<AccessoryContext>): void;
     private start;
