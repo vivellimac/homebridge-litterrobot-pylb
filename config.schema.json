@@ -2,69 +2,159 @@
   "pluginAlias": "LitterRobotPylb",
   "pluginType": "platform",
   "singular": true,
+
   "schema": {
     "type": "object",
     "properties": {
-      "platform": { "type": "string", "const": "LitterRobotPylb" },
-      "name": { "type": "string", "default": "Litter-Robot" },
-      "username": { "type": "string", "title": "Whisker Email" },
-      "password": { "type": "string", "title": "Whisker Password" },
-      "python": { "type": "string", "title": "Python Executable", "default": "/usr/bin/python3" },
-      "workdir": { "type": "string", "title": "Sidecar Work Dir (HB host)", "default": "/var/lib/homebridge/lr-sidecar" },
-      "host": { "type": "string", "default": "127.0.0.1", "title": "Sidecar Host" },
-      "port": { "type": "integer", "default": 8765, "title": "Sidecar Port" },
-      "pollInterval": { "type": "number", "default": 5000, "minimum": 3000, "maximum": 60000 },
-      "pulseMs": { "type": "number", "default": 1500, "minimum": 250, "maximum": 10000 },
-      "debug": {
-        "type": "boolean",
-        "title": "Verbose Status Heartbeat",
-        "default": false
+      "username": { "type": "string", "title": "Account Email" },
+      "password": { "type": "string", "title": "Account Password" },
+
+      "switches": {
+        "type": "object",
+        "title": "Switches",
+        "properties": {
+          "cycleNow":   { "type": "boolean", "title": "Cycle Now",   "default": true },
+          "globeLight": { "type": "boolean", "title": "Globe Light", "default": true }
+        }
       },
+
+      "sensors": {
+        "type": "object",
+        "title": "Sensors",
+        "properties": {
+          "cycleCompleted": { "type": "boolean", "title": "Cycle Completed", "default": true },
+          "cycleFault":     { "type": "boolean", "title": "Cycle Fault",     "default": true },
+          "pinch":          { "type": "boolean", "title": "Pinch (safety)",  "default": true },
+          "offline":        { "type": "boolean", "title": "Offline",         "default": true }
+        }
+      },
+
       "advanced": {
         "type": "object",
         "title": "Advanced",
         "properties": {
-          "drawerControls": {
+          "debug": {
             "type": "boolean",
-            "title": "Enable Drawer Controls (Drawer % sensor + Reset switch)",
+            "title": "Enable debug/heartbeat logs",
             "default": false
           },
-          "litterPercent": {
-            "type": "boolean",
-            "title": "Expose Litter % Sensor",
-            "default": false
-          },
-          "interruptTimeoutEnabled": {
-            "type": "boolean",
-            "title": "Enable Cycle-Interrupt Timeout Alert",
-            "default": false
-          },
-          "interruptTimeoutMinutes": {
+
+          "port": {
             "type": "number",
-            "title": "Cycle-Interrupt Timeout (minutes)",
-            "default": 10,
+            "title": "Sidecar Port",
+            "default": 8765,
             "minimum": 1,
-            "maximum": 120
+            "maximum": 65535,
+            "description": "Leave as 8765 unless you know what you're doing."
+          },
+
+          "workdir": {
+            "type": "string",
+            "title": "Sidecar Workdir",
+            "default": "/home/homebridge/lr-sidecar",
+            "description": "Leave as default unless you know what you're doing."
+          },
+
+          "bonnetSensor": {
+            "type": "boolean",
+            "title": "Expose Bonnet Sensor (Advanced)",
+            "default": false
+          },
+
+          "drawer": {
+            "type": "object",
+            "title": "Drawer Controls",
+            "properties": {
+              "enable":      { "type": "boolean", "title": "Expose Drawer % sensor",      "default": false },
+              "resetSwitch": { "type": "boolean", "title": "Expose Reset Drawer switch",  "default": false }
+            }
+          },
+
+          "litter": {
+            "type": "object",
+            "title": "Litter Level",
+            "properties": {
+              "enable": { "type": "boolean", "title": "Expose Litter % sensor", "default": false }
+            }
+          },
+
+          "cycleInterrupt": {
+            "type": "object",
+            "title": "Cycle Interrupt Timeout",
+            "properties": {
+              "enabled": { "type": "boolean", "title": "Enable interrupt timeout alert", "default": false },
+              "minutes": { "type": "number",  "title": "Minutes before alert", "default": 5, "minimum": 1, "maximum": 120 }
+            }
           }
         }
+      }
     },
     "required": ["username", "password"]
-},
+  },
+
   "layout": [
-    "username",
-    "password",
-    "port",
-    "workdir",
-    { "key": "debug", "type": "checkbox", "advanced": true },
     {
-      "key": "advanced",
       "type": "fieldset",
-      "advanced": true,
+      "title": "Account",
+      "items": [ "username", "password" ]
+    },
+
+    {
+      "type": "fieldset",
+      "title": "Accessories",
       "items": [
-        "advanced.drawerControls",
-        "advanced.litterPercent",
-        "advanced.interruptTimeoutEnabled",
-        "advanced.interruptTimeoutMinutes"
+        {
+          "type": "fieldset",
+          "title": "Switches",
+          "items": [
+            "switches.cycleNow",
+            "switches.globeLight"
+          ]
+        },
+        {
+          "type": "fieldset",
+          "title": "Sensors",
+          "items": [
+            "sensors.cycleCompleted",
+            "sensors.cycleFault",
+            "sensors.pinch",
+            "sensors.offline"
+          ]
+        }
+      ]
+    },
+
+    {
+      "type": "fieldset",
+      "title": "Advanced",
+      "items": [
+        "advanced.debug",
+        "advanced.port",
+        "advanced.workdir",
+        "advanced.bonnetSensor",
+        {
+          "type": "fieldset",
+          "title": "Drawer Controls",
+          "items": [
+            "advanced.drawer.enable",
+            "advanced.drawer.resetSwitch"
+          ]
+        },
+        {
+          "type": "fieldset",
+          "title": "Litter Level",
+          "items": [
+            "advanced.litter.enable"
+          ]
+        },
+        {
+          "type": "fieldset",
+          "title": "Cycle Interrupt Timeout",
+          "items": [
+            "advanced.cycleInterrupt.enabled",
+            "advanced.cycleInterrupt.minutes"
+          ]
+        }
       ]
     }
   ]
