@@ -57,15 +57,6 @@ type Status = {
   state?: 'READY' | 'CLEANING' | 'INTERRUPTED' | 'PAUSED' | 'OFFLINE';
 };
 
-type AdvancedConfig = {
-  port?: number;
-  workdir?: string;
-  debug?: boolean;
-  bonnetSensor?: boolean;
-  drawer?: { enable?: boolean };
-  cycleInterrupt?: { enabled?: boolean; minutes?: number };
-};
-
 /* ---------- safe config helpers ---------- */
 
 function asObject(v: unknown): Record<string, unknown> | undefined {
