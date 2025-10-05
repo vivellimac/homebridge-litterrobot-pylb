@@ -57,6 +57,33 @@ type Status = {
   state?: 'READY' | 'CLEANING' | 'INTERRUPTED' | 'PAUSED' | 'OFFLINE';
 };
 
+type AdvancedConfig = {
+  port?: number;
+  workdir?: string;
+  debug?: boolean;
+  bonnetSensor?: boolean;
+  drawer?: { enable?: boolean };
+  cycleInterrupt?: { enabled?: boolean; minutes?: number };
+};
+
+/* ---------- safe config helpers ---------- */
+
+function asObject(v: unknown): Record<string, unknown> | undefined {
+  return v !== null && typeof v === 'object' ? (v as Record<string, unknown>) : undefined;
+}
+function readBoolean(obj: Record<string, unknown> | undefined, key: string): boolean | undefined {
+  const v = obj?.[key];
+  return typeof v === 'boolean' ? v : undefined;
+}
+function readNumber(obj: Record<string, unknown> | undefined, key: string): number | undefined {
+  const v = obj?.[key];
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+function readString(obj: Record<string, unknown> | undefined, key: string): string | undefined {
+  const v = obj?.[key];
+  return typeof v === 'string' ? v : undefined;
+}
+
 /* ---------- platform ---------- */
 
 export class LitterRobotPlatform implements DynamicPlatformPlugin {
@@ -76,6 +103,11 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
     interruptTimeoutEnabled?: boolean;
     interruptTimeoutMins?: number;
   } = {};
+
+  // runtime basics captured at start()
+  private runtimePort = 8765;
+  private runtimeWorkdir = '';
+  private runtimeDebug = false;
 
   constructor(
     public readonly log: Logging,
@@ -104,54 +136,66 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
 
   // ---------- lifecycle ----------
   private start(): void {
-    // Read advanced group (nested) with safe fallbacks
-    const advCfg = (this.config as any).advanced ?? {};
-    const ciCfg = advCfg.cycleInterrupt ?? {};
-    const drawerCfg = advCfg.drawer ?? {};
+    // Safely read advanced group (nested) with fallbacks
+    const cfgRoot = asObject(this.config);
+    const advRoot = cfgRoot ? asObject(cfgRoot.advanced) : undefined;
+    const drawerRoot = advRoot ? asObject(advRoot.drawer) : undefined;
+    const cycleRoot = advRoot ? asObject(advRoot.cycleInterrupt) : undefined;
 
     // Capture advanced toggles for later use (accessory layout, timers)
     this.adv = {
-      bonnet: Boolean(advCfg.bonnetSensor ?? false),
-      drawerControl: Boolean(drawerCfg.enable ?? false),
-      interruptTimeoutEnabled: Boolean(ciCfg.enabled ?? false),
-      interruptTimeoutMins: Math.max(1, Math.min(120, Number(ciCfg.minutes ?? 5))),
+      bonnet: readBoolean(advRoot, 'bonnetSensor') ?? false,
+      drawerControl: readBoolean(drawerRoot, 'enable') ?? false,
+      interruptTimeoutEnabled: readBoolean(cycleRoot, 'enabled') ?? false,
+      interruptTimeoutMins: clampNumber(readNumber(cycleRoot, 'minutes') ?? 5, 1, 120),
     };
 
     // Port/workdir/debug can come from advanced.* or top-level (back-compat)
-    const port = Number(advCfg.port ?? this.config.port ?? 8765);
-    const workdir = String(advCfg.workdir ?? this.config.workdir ?? path.join(this.api.user.storagePath(), 'lr-sidecar'));
-    const debug = Boolean(advCfg.debug ?? this.config.debug ?? false);
+    const topPort = readNumber(cfgRoot, 'port');
+    const advPort = readNumber(advRoot, 'port');
+    this.runtimePort = Number.isFinite(advPort ?? topPort) ? (advPort ?? topPort)! : 8765;
 
-    const pulseMs = clampNumber(Number(this.config.pulseMs ?? 1500), 250, 10_000);
-    const pollInterval = clampNumber(Number(this.config.pollInterval ?? 5000), 3000, 60_000);
-    const username = String(this.config.username ?? '');
-    const password = String(this.config.password ?? '');
+    const topWorkdir = readString(cfgRoot, 'workdir');
+    const advWorkdir = readString(advRoot, 'workdir');
+    this.runtimeWorkdir = String(advWorkdir ?? topWorkdir ?? path.join(this.api.user.storagePath(), 'lr-sidecar'));
+
+    const topDebug = readBoolean(cfgRoot, 'debug');
+    const advDebug = readBoolean(advRoot, 'debug');
+    this.runtimeDebug = Boolean(advDebug ?? topDebug ?? false);
+
+    const pulseMs = clampNumber(typeof cfgRoot?.pulseMs === 'number' ? cfgRoot.pulseMs : 1500, 250, 10_000);
+    const pollInterval = clampNumber(typeof cfgRoot?.pollInterval === 'number' ? cfgRoot.pollInterval : 5000, 3000, 60_000);
+    const username = readString(cfgRoot, 'username') ?? '';
+    const password = readString(cfgRoot, 'password') ?? '';
 
     if (!username || !password) {
       this.log.warn('Missing username/password in config — plugin idle.');
       return;
     }
 
-    try { fs.mkdirSync(workdir, { recursive: true }); }
-    catch (e) { this.log.error(`Failed to create workdir ${workdir}: ${errMsg(e)}`); return; }
+    try { fs.mkdirSync(this.runtimeWorkdir, { recursive: true }); }
+    catch (e) { this.log.error(`Failed to create workdir ${this.runtimeWorkdir}: ${errMsg(e)}`); return; }
 
-    const systemPy = String(this.config.python ?? 'python3');
-    const venvDir = path.join(workdir, '.venv');
+    const systemPy = readString(cfgRoot, 'python') ?? 'python3';
+    const venvDir = path.join(this.runtimeWorkdir, '.venv');
     const venvPy = path.join(venvDir, 'bin', 'python');
     const pluginDir = path.resolve(this.api.user.storagePath(), 'node_modules', PLUGIN_NAME);
     const bootstrap = path.join(pluginDir, 'sidecar', 'bootstrap.py');
-    const bLog = path.join(workdir, 'bootstrap.log');
+    const bLog = path.join(this.runtimeWorkdir, 'bootstrap.log');
 
-    if (debug) {
-      this.log.info(`[sidecar] workdir=${workdir} port=${port} bootstrap=${bootstrap} systemPy=${systemPy} venvPy=${venvPy}`);
+    if (this.runtimeDebug) {
+      this.log.info(
+        `[sidecar] workdir=${this.runtimeWorkdir} port=${this.runtimePort} bootstrap=${bootstrap} `
+        + `systemPy=${systemPy} venvPy=${venvPy}`,
+      );
     }
 
     // First: quick health probe (no tail yet to avoid log spam on warm starts)
     this.log.info('[sidecar] Waiting for /health ...');
-    waitForHealth(port, 2000).then((healthyFast) => {
+    waitForHealth(this.runtimePort, 2000).then((healthyFast) => {
       if (healthyFast) {
-        this.log.info(`Sidecar healthy at http://127.0.0.1:${port}`);
-        this.loginAndBegin(username, password, port, pulseMs, pollInterval, debug);
+        this.log.info(`Sidecar healthy at http://127.0.0.1:${this.runtimePort}`);
+        this.loginAndBegin(username, password, this.runtimePort, pulseMs, pollInterval, this.runtimeDebug);
         return;
       }
 
@@ -160,7 +204,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       this.log.info('[sidecar] Not healthy; invoking bootstrap …');
 
       try {
-        this.py = spawn(systemPy, [bootstrap, '--workdir', workdir, '--port', String(port)], {
+        this.py = spawn(systemPy, [bootstrap, '--workdir', this.runtimeWorkdir, '--port', String(this.runtimePort)], {
           stdio: 'ignore',
           env: process.env,
         });
@@ -174,16 +218,16 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       }
 
       // Adaptive wait: keep waiting while bootstrap.log is active (up to 15m)
-      return waitForHealthAdaptive(port, bLog, 45_000, 900_000).then((ok2) => {
+      return waitForHealthAdaptive(this.runtimePort, bLog, 45_000, 900_000).then((ok2) => {
         try { this.tailStop?.(); } catch { /* ignore */ }
         if (!ok2) {
           this.log.error('Sidecar failed to start after bootstrap (no health and no recent bootstrap activity).');
           return;
         }
         const venvOk = fs.existsSync(venvPy);
-        if (debug) this.log.info(`[sidecar] venv python present: ${venvOk ? 'yes' : 'no'}`);
-        this.log.info(`Sidecar healthy at http://127.0.0.1:${port}`);
-        this.loginAndBegin(username, password, port, pulseMs, pollInterval, debug);
+        if (this.runtimeDebug) this.log.info(`[sidecar] venv python present: ${venvOk ? 'yes' : 'no'}`);
+        this.log.info(`Sidecar healthy at http://127.0.0.1:${this.runtimePort}`);
+        this.loginAndBegin(username, password, this.runtimePort, pulseMs, pollInterval, this.runtimeDebug);
       });
     }).catch((e) => {
       this.log.error(`Health check error: ${errMsg(e)}`);
@@ -297,22 +341,21 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
         const it = newAcc.getServiceById(this.Service.MotionSensor, 'InterruptedTimeout'); if (it) newAcc.removeService(it);
       }
 
-      // Characteristic handlers
+      // Handlers
       swCycle.getCharacteristic(this.Characteristic.On).onSet((val) => {
         if (!val) return;
-        this.request('POST', Number((this.config as any).advanced?.port ?? this.config.port ?? 8765), `/cycle/${id}`, (err2) => {
+        this.request('POST', this.runtimePort, `/cycle/${id}`, (err2) => {
           if (err2) this.log.warn(`Cycle command failed: ${errMsg(err2)}`);
-          setTimeout(() => swCycle!.updateCharacteristic(this.Characteristic.On, false), 300);
+          setTimeout(() => swCycle.updateCharacteristic(this.Characteristic.On, false), 300);
         }, {});
       });
 
-      // Globe Light switch
       swLight.getCharacteristic(this.Characteristic.On).onSet((val) => {
         const desired = Boolean(val);
-        this.request('POST', Number((this.config as any).advanced?.port ?? this.config.port ?? 8765), `/lights/${id}`, (err2) => {
+        this.request('POST', this.runtimePort, `/lights/${id}`, (err2) => {
           if (err2) {
             this.log.warn(`Light set failed: ${errMsg(err2)}`);
-            setTimeout(() => swLight!.updateCharacteristic(this.Characteristic.On, !desired), 300);
+            setTimeout(() => swLight.updateCharacteristic(this.Characteristic.On, !desired), 300);
           }
         }, { on: desired });
       });
@@ -321,7 +364,7 @@ export class LitterRobotPlatform implements DynamicPlatformPlugin {
       if (swReset) {
         swReset.getCharacteristic(this.Characteristic.On).onSet((val) => {
           if (!val) return;
-          this.request('POST', Number((this.config as any).advanced?.port ?? this.config.port ?? 8765), `/reset_drawer/${id}`, (err2) => {
+          this.request('POST', this.runtimePort, `/reset_drawer/${id}`, (err2) => {
             if (err2) this.log.warn(`Reset drawer failed: ${errMsg(err2)}`);
             setTimeout(() => swReset.updateCharacteristic(this.Characteristic.On, false), 300);
           }, {});
